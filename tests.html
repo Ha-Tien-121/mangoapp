@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Onboarding logic tests</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 20px; }
+      .pass { color: #1f8a4c; } .fail { color: #c4352b; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Onboarding logic tests</h1>
+    <p id="summary"></p>
+    <ul id="out"></ul>
+    <script src="js/data.js"></script>
+    <script src="js/plan.js"></script>
+    <script>
+      const results = [];
+      function test(name, fn) {
+        try { fn(); results.push([name, true]); } catch (e) { results.push([name + " — " + e.message, false]); }
+      }
+      function eq(a, b, msg) { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error((msg || "") + ` expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); }
+      function ok(v, msg) { if (!v) throw new Error(msg || "expected truthy"); }
+
+      const T = "2026-11-05";
+      function hire(dept, start, doneKeys) {
+        const tasks = OB.buildPlan(dept, start);
+        for (const t of tasks) if ((doneKeys || []).includes(t.key)) t.done = true;
+        return { id: "x", name: "Test Person", department: dept, startDate: start, managerId: "david", tasks };
+      }
+
+      test("dates: addDays across month end", () => eq(OB.addDays("2026-10-30", 3), "2026-11-02"));
+      test("dates: diffDays across DST change", () => eq(OB.diffDays("2026-11-02", "2026-10-31"), 2));
+      test("dates: rejects 2026-02-30", () => eq(OB.isValidISO("2026-02-30"), false));
+
+      test("phases from day offset", () => {
+        eq(OB.phaseForOffset(-1), "before"); eq(OB.phaseForOffset(0), "week1"); eq(OB.phaseForOffset(6), "week1"); eq(OB.phaseForOffset(7), "month1");
+      });
+
+      test("Engineering plan = Company + Engineering tasks", () => {
+        const p = OB.buildPlan("Engineering", T);
+        eq(p.length, OB.TEMPLATES.Company.length + OB.TEMPLATES.Engineering.length);
+        ok(p.some((t) => t.key === "e-devenv"), "has dev env task");
+        ok(!p.some((t) => t.key === "s-demo"), "no sales tasks");
+      });
+      test("Sales plan has no engineering tasks", () => {
+        const p = OB.buildPlan("Sales", T);
+        ok(!p.some((t) => t.source === "Engineering"));
+        ok(p.some((t) => t.key === "s-demo"));
+      });
+      test("due dates come from start date", () => {
+        const p = OB.buildPlan("Engineering", "2026-11-09");
+        eq(p.find((t) => t.key === "c-offer").dueDate, "2026-10-30");
+        eq(p.find((t) => t.key === "c-orient").dueDate, "2026-11-09");
+      });
+      test("late plan: past due dates move to creation day, nothing overdue", () => {
+        const start = OB.addDays(T, 1);
+        const p = OB.buildPlan("Engineering", start, [], T);
+        ok(p.every((t) => t.dueDate >= T));
+        eq(p.find((t) => t.key === "c-orient").dueDate, start);
+        eq(OB.hireStats({ startDate: start, tasks: p }, T).overdue.length, 0);
+      });
+      test("skipped template tasks are left out", () => {
+        const p = OB.buildPlan("Engineering", T, ["e-oncall"]);
+        ok(!p.some((t) => t.key === "e-oncall"));
+      });
+
+      test("focus: max 3 tasks, all owned by new hire", () => {
+        const f = OB.focusTasks(hire("Engineering", OB.addDays(T, 4)), T, 3);
+        ok(f.tasks.length <= 3); ok(f.tasks.every((t) => t.owner === "newhire"));
+      });
+      test("focus: before start, shows Before Day 1 tasks only", () => {
+        const f = OB.focusTasks(hire("Engineering", OB.addDays(T, 4)), T, 3);
+        ok(f.tasks.every((t) => t.phase === "before"), JSON.stringify(f.tasks.map((t) => t.phase)));
+      });
+      test("focus: overdue tasks come first", () => {
+        const h = hire("Engineering", OB.addDays(T, -6), []);
+        const f = OB.focusTasks(h, T, 3);
+        ok(OB.isOverdue(f.tasks[0], T));
+      });
+      test("focus: nothing due now → shows upcoming", () => {
+        const start = OB.addDays(T, 4);
+        const h = hire("Engineering", start);
+        h.tasks.forEach((t) => { if (t.phase === "before") t.done = true; });
+        const f = OB.focusTasks(h, T, 3);
+        eq(f.upcoming, true); ok(f.tasks.length > 0);
+      });
+
+      test("status: overdue → attention", () => eq(OB.hireStats(hire("Sales", OB.addDays(T, -10)), T).status, "attention"));
+      test("status: future start, nothing overdue → prestart", () => eq(OB.hireStats(hire("Sales", OB.addDays(T, 30)), T).status, "prestart"));
+      test("status: all done → complete", () => {
+        const h = hire("Sales", OB.addDays(T, -3)); h.tasks.forEach((t) => (t.done = true));
+        eq(OB.hireStats(h, T).status, "complete");
+      });
+      test("status: empty plan does not crash", () => {
+        const h = hire("Sales", T); h.tasks = [];
+        const s = OB.hireStats(h, T); eq(s.pct, 0); ok(s.status !== "complete");
+      });
+
+      test("permissions", () => {
+        eq(OB.canComplete("newhire", { owner: "newhire" }), true);
+        eq(OB.canComplete("newhire", { owner: "manager" }), false);
+        eq(OB.canComplete("manager", { owner: "newhire" }), false);
+        eq(OB.canComplete("hr", { owner: "it" }), true);
+      });
+
+      const good = { name: "Jo Bloggs", title: "Engineer", department: "Engineering", managerId: "david", startDate: OB.addDays(T, 14) };
+      test("validate: good input passes", () => eq(OB.validateHire(good, T, []).ok, true));
+      test("validate: blank name fails", () => ok(OB.validateHire({ ...good, name: "   " }, T, []).errors.name));
+      test("validate: missing department fails", () => ok(OB.validateHire({ ...good, department: "" }, T, []).errors.department));
+      test("validate: start > 4 weeks ago fails", () => ok(OB.validateHire({ ...good, startDate: OB.addDays(T, -40) }, T, []).errors.startDate));
+      test("validate: start in past warns", () => ok(OB.validateHire({ ...good, startDate: OB.addDays(T, -3) }, T, []).warnings.length));
+      test("validate: duplicate name warns", () => ok(OB.validateHire(good, T, [{ name: "jo bloggs" }]).warnings.length));
+      test("validate: invalid date string fails", () => ok(OB.validateHire({ ...good, startDate: "2026-13-01" }, T, []).errors.startDate));
+
+      test("custom task: needs title", () => ok(OB.validateCustomTask({ title: "", owner: "newhire", dueDate: T }, { startDate: T }).errors.title));
+      test("custom task: beyond 4 weeks fails", () => ok(OB.validateCustomTask({ title: "x", owner: "newhire", dueDate: OB.addDays(T, 40) }, { startDate: T }).errors.dueDate));
+      test("custom task: phase from due date", () => {
+        const t = OB.makeCustomTask({ title: "x", owner: "manager", dueDate: OB.addDays(T, 10) }, { startDate: T }, "david");
+        eq(t.phase, "month1"); eq(t.custom, true);
+      });
+
+      const out = document.getElementById("out");
+      out.innerHTML = results.map(([n, p]) => `<li class="${p ? "pass" : "fail"}">${p ? "✓" : "✗"} ${n.replace(/</g, "&lt;")}</li>`).join("");
+      const failed = results.filter((r) => !r[1]).length;
+      document.getElementById("summary").innerHTML = failed
+        ? `<span class="fail">${failed} of ${results.length} failed</span>`
+        : `<span class="pass">All ${results.length} tests passed</span>`;
+      document.title = failed ? `FAIL (${failed})` : `PASS (${results.length})`;
+    </script>
+  </body>
+</html>
