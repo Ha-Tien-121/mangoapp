@@ -1,4 +1,4 @@
-// Mock data for MangoApps (the scenario customer was BrightPath Technologies).
+// Mock data for MangoApps Onboarding (a sample company with a few departments).
 // Templates are layered: every hire gets the "Company" tasks, plus the tasks for their department.
 // dayOffset is days relative to the start date (negative = before Day 1).
 window.OB = window.OB || {};

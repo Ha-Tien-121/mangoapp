@@ -1,6 +1,6 @@
 # MangoApps Onboarding: prototype
 
-A first version of a new-hire onboarding tool, branded **MangoApps**. Built for Scenario 1 of the MangoApps Associate PM take-home (the scenario customer is BrightPath Technologies).
+A first version of a new-hire onboarding tool, branded **MangoApps**, for growing companies that hire new people every month. Built for Scenario 1 of the MangoApps Associate PM take-home.
 
 It gives each new hire **one place** to see what to do, shows them **only what matters right now**, builds their plan **automatically from their department and role**, and lets **managers and HR see progress** at a glance.
 
@@ -27,7 +27,7 @@ Plain HTML, CSS and JavaScript. No install, no build step, no backend. All data 
 
 ### The problem
 
-BrightPath Technologies has about 150 people. Onboarding lives in emails, documents and spreadsheets. Steps get missed, and managers aren't sure whether everything has been done. Sarah (HR Manager) wants one tool that makes onboarding "easier for everyone, *especially our new employees*".
+In many growing companies, onboarding lives in emails, documents and spreadsheets. Steps get missed, and managers aren't sure whether everything has been done. Sarah (HR Manager) wants one tool that makes onboarding "easier for everyone, *especially our new employees*".
 
 ### Who it's for
 
@@ -838,7 +838,7 @@ The repo includes an agent workflow that critiques, improves and re-tests the UI
 | Round | Date | What happened | Harness |
 |---|---|---|---|
 | 1 | Nov 5 | Critic found 12 issues. Fixed 6: phone header, templates on phone, the new hire seeing others' overdue tasks in red, overdue row alignment, a 2,500px manager detail page (63% shorter on phone), 44px tap targets. | 29 tests PASS, 0 problems |
-| 2 | Nov 5 | Research brief (27 sources), then a redesign: journey strip, Day-1 card and .ics, one banner, milestones, progress bar with an "expected by today" tick, rolling 7-day strip, digest and nudge, the "Where everyone is" timeline, editable templates, simpler charts, no punishing words, a colour-blind-safe status palette. Rebranded BrightPath → MangoApps. | 59 tests PASS, 25 screens, 0 problems |
+| 2 | Nov 5 | Research brief (27 sources), then a redesign: journey strip, Day-1 card and .ics, one banner, milestones, progress bar with an "expected by today" tick, rolling 7-day strip, digest and nudge, the "Where everyone is" timeline, editable templates, simpler charts, no punishing words, a colour-blind-safe status palette. Rebranded as MangoApps. | 59 tests PASS, 25 screens, 0 problems |
 | 3 | Nov 5 | Smarter templates: work type and job level rules, 6 task types with icons and links, "I've read and agree", remote Day 1, "Because:" reasons and skipped tasks in the preview. | 74 tests PASS, 46/46 rows ok |
 | 4 | Nov 6 | New hire (Team, Schedule, Learning, Forms), manager (readiness, 1:1s, goals, notifications, drill-downs, buddy picker), HR (roles, bulk import, insights, pulses, edit/remove, compliance, documents). The HR filter bar was built then removed, and offboarding/moves dropped, at the user's request. Fixes: phone bottom sheet, weekend start warning, compliance cards on phone, tabs with `aria-current`, focus after Undo. | 143 tests PASS, 258/258 rows ok, 0 problems |
 
