@@ -4,7 +4,7 @@
   // UI-only state (not saved)
   const ui = {
     hrTab: "hires", // hires | add | templates | insights | more
-    hrSub: null, // + Add: null (one person) | "bulk"; More: null | compliance | documents | moves
+    hrSub: null, // + Add: null (one person) | "bulk"; More: null | compliance | documents
     detailId: null, // hire being viewed by manager/HR
     nhTab: "focus", // focus (Today) | plan | schedule | learning | team
     nhForm: null, // Today > forms: null | "list" | a form id (OB.FORMS)
