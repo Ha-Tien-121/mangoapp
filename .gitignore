@@ -1,3 +1,4 @@
 ui-review/
 ui-tests/__pycache__/
 __pycache__/
+.claude/

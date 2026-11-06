@@ -819,9 +819,9 @@ Used for: the Day-1 card (`mangoapps-day-1.ics`; for remote hires the LOCATION i
 
 ### AI critic and builder workflow (Claude Code)
 
-The repo includes an agent workflow that critiques, improves and re-tests the UI.
+I used a Claude Code agent workflow to critique, improve and re-test the UI. Its configuration (`.claude/`) is kept locally and isn't part of this repo; this section describes how it worked.
 
-| Piece | File | Job |
+| Piece | File (local only) | Job |
 |---|---|---|
 | `ui-critic` agent | `.claude/agents/ui-critic.md` | Runs the harness, looks at every screenshot (desktop and phone) as Emily, David and Sarah, probes edge cases, and returns ranked findings (P1 broken, P2 worse, P3 polish; at most 12). In **verify** mode it marks each change FIXED / PARTLY / NOT FIXED / REGRESSION. It never edits app code. |
 | `ui-builder` agent | `.claude/agents/ui-builder.md` | Implements exactly the listed changes, keeps `esc()`, `data-action` delegation and CSS variables, adds tests for logic changes, updates the harness when a flow changes, and reruns it. Never commits. |
@@ -860,9 +860,7 @@ js/store.js                   localStorage load/save/reset, seed state, cross-ta
 js/app.js                     UI: rendering, event delegation, routing, dialogs, downloads
 ui-tests/snap.py              Playwright harness: 129 screens × 2 viewports, screenshots and automatic checks
 ui-tests/snap.sh              Finds a Python with Playwright and runs snap.py
-.claude/agents/ui-critic.md   Agent that reviews and tests the UI (never edits code)
-.claude/agents/ui-builder.md  Agent that implements a list of UI changes
-.claude/skills/ui-loop/SKILL.md  The /ui-loop command: critique → build → verify → log
+.claude/                      Local only (git-ignored): the ui-critic / ui-builder agents and the /ui-loop command
 ui-review/                    Local only (git-ignored): feedback, findings, log and screenshots per round
 LICENSE                       MIT
 .gitignore                    Ignores ui-review/ and Python caches
