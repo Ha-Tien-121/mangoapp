@@ -2,7 +2,7 @@
 window.OB = window.OB || {};
 
 (function () {
-  const KEY = "brightpath-onboarding-v1";
+  const KEY = "mangoapps-onboarding-v1";
 
   function seedState() {
     const today = OB.todayISO();
@@ -19,7 +19,9 @@ window.OB = window.OB || {};
       }
       return { id: s.id, name: s.name, title: s.title, department: s.department, managerId: s.managerId, startDate, tasks };
     });
-    return { version: 1, viewerId: "emily", demoToday: null, hires };
+    // reminders: banner snooze / "Got it" / milestone-seen flags (cleared by Reset demo data).
+    // templates: HR's edited copies of OB.TEMPLATES, by template name (empty = all defaults).
+    return { version: 1, viewerId: "emily", demoToday: null, hires, reminders: { hide: {}, seen: {} }, templates: {} };
   }
 
   function load() {
@@ -27,7 +29,14 @@ window.OB = window.OB || {};
       const raw = localStorage.getItem(KEY);
       if (raw) {
         const s = JSON.parse(raw);
-        if (s && s.version === 1 && Array.isArray(s.hires)) return s;
+        if (s && s.version === 1 && Array.isArray(s.hires)) {
+          // Plans saved before tasks carried isEvent: copy it from the templates.
+          const events = new Set(Object.values(OB.TEMPLATES).flat().filter((t) => t.isEvent).map((t) => t.key));
+          for (const h of s.hires) for (const t of h.tasks || []) if (t.isEvent === undefined) t.isEvent = events.has(t.key);
+          // Saved before templates were editable (or corrupt): use the defaults.
+          if (!s.templates || typeof s.templates !== "object" || Array.isArray(s.templates)) s.templates = {};
+          return s;
+        }
       }
     } catch (e) {
       /* storage blocked or corrupt: fall back to seed data */

@@ -1,6 +1,6 @@
-# BrightPath Onboarding: prototype
+# MangoApps Onboarding: prototype
 
-A first version of a new-hire onboarding tool for **BrightPath Technologies** (Scenario 1 of the MangoApps APM take-home).
+A first version of a new-hire onboarding tool, branded **MangoApps**. Built for Scenario 1 of the MangoApps APM take-home (the scenario customer is BrightPath Technologies).
 
 It gives each new hire **one place** to see what to do, shows them **only what matters right now**, builds their plan **automatically from their department**, and lets **managers and HR see progress** at a glance.
 
@@ -51,7 +51,8 @@ They don't actually conflict: David is talking about **what's in** the plan, Emi
 - **The plan is generated from department, not role.** Sarah says "role or department". Department is a cleaner first cut with ~150 people; role-level templates are a next step.
 - **"Automatically create plans" means templates + a review step**, not AI. HR sees the generated plan and can remove tasks before saving. Fully automatic creation (e.g. from the HRIS when an offer is signed) is a later step.
 - **Late plans aren't punished.** If HR adds someone 2 days before they start, tasks that would already be overdue become due today instead. Otherwise a new hire would start with a red "Needs attention" badge that's HR's fault, not theirs.
-- **Status rules** (for managers/HR): *Needs attention* = anything overdue; *Not started yet* = before Day 1, nothing overdue; *On track*; *Complete*.
+- **Status rules** (for managers/HR): the status says whose move is next, in neutral words. In priority order: *N for you* / *N for manager* (a manager task is past its date: a calm blue arrow chip; red is only used for form errors); *N to catch up* (the new hire's own tasks are past their date; meetings don't count, and before Day 1 this is the most it can show); *With IT* / *With HR* (only IT/HR tasks are past their date); *Starts <date>* (before Day 1, nothing pending); *On track*; *Complete*. Cards and table rows show one chip; the hire's detail page shows all of them. **Progress bars and "N to catch up" use one definition** (`OB.ownProgress` in `js/plan.js`): the bar counts only the new hire's own tasks (not meetings); the blue fill is how many of their tasks dated before today are done, and the small tick is how many were dated before today ("where they'd be by today", explained by a one-line key above the cards and the table). The gap between fill and tick is exactly the "N to catch up" number; when a card or row's chip is about someone else ("1 for you"), a muted "N to catch up" line sits under the bar. The caption is always "N of M done" on the same scale. The manager's week strip, the list under it, the digest and the header all count the same rolling 7 days (`OB.rollingWeek`: today + 6 days, anything past its date counts on today; later items sit under a quiet "Later" fold).
+- **Template edits apply to new plans only, and only HR can edit templates.** A hire's plan is a copy made when they're added, so editing a template never changes the plan of someone already onboarding (the Plan templates tab says so). Managers still add one-off tasks to one person's plan. Edited templates are saved in the browser alongside the rest of the demo data; "Reset demo data" restores the defaults from `js/data.js`.
 - Mock data only, no real logins. A role switcher stands in for sign-in.
 
 ## Edge cases handled
@@ -65,7 +66,7 @@ They don't actually conflict: David is talking about **what's in** the plan, Emi
 
 ## What I left out (and why)
 
-- **Editing templates in the UI.** Templates are visible to HR (read-only) but edited in `js/data.js`. Getting the plan right for a hire mattered more than the admin screen.
+- **Reordering template tasks by hand, and template history.** HR can add, edit and remove template tasks (Plan templates tab), but tasks are always ordered by their timing, and there is no audit trail or undo beyond "Reset to original" per template.
 - **Notifications and reminders** (email/Slack nudges for overdue tasks). This is the obvious next thing for "managers aren't sure whether everything has been completed", but it needs a backend.
 - **Real accounts, permissions and a database.** Everything is in localStorage.
 - **Role-level templates**, task dependencies ("can't do X until IT does Y"), attachments/links to documents, e-signatures.
@@ -79,6 +80,18 @@ They don't actually conflict: David is talking about **what's in** the plan, Emi
 4. Is "first few weeks" 30 days, or do some departments (e.g. Sales ramp) need 60–90?
 5. Are there legally required tasks (I-9 within 3 days, state training) that need hard deadlines and an audit trail?
 6. Do new hires have a company login before Day 1, or do pre-start tasks need to work from a personal email link?
+
+## UI improvement loop (Claude Code)
+
+The repo includes an agent workflow that critiques, improves and re-tests the UI:
+
+- **`ui-critic`** agent (`.claude/agents/ui-critic.md`): screenshots every screen at desktop and phone size, reviews them as Emily, David and Sarah, probes edge cases, and writes ranked findings. It never edits code.
+- **`ui-builder`** agent (`.claude/agents/ui-builder.md`): implements the chosen changes and keeps the tests passing.
+- **`/ui-loop`** command (`.claude/skills/ui-loop/SKILL.md`): runs critique → triage → build → verify → log. Examples: `/ui-loop`, `/ui-loop 3 rounds`, `/ui-loop critique only`, `/ui-loop focus phone`, `/ui-loop make the overdue colour less alarming`.
+- **Your feedback** goes in `ui-review/feedback.md` (Inbox, or "Standing preferences" for rules that always apply), or just reply in chat. Your feedback always beats the critic's.
+- **History**: `ui-review/log.md`. Screenshots per round: `ui-review/shots/round-N/`.
+
+Harness on its own: `bash ui-tests/snap.sh`. One-time setup: `pip install playwright && python -m playwright install chromium`.
 
 ## Project layout
 

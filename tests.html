@@ -60,6 +60,14 @@
         eq(p.find((t) => t.key === "c-orient").dueDate, start);
         eq(OB.hireStats({ startDate: start, tasks: p }, T).overdue.length, 0);
       });
+      test("built plan keeps new-hire wording (hireTitle/hireDesc)", () => {
+        const p = OB.buildPlan("Engineering", T);
+        const t = p.find((x) => x.key === "c-1on1");
+        eq(t.hireTitle, OB.TEMPLATES.Company.find((x) => x.key === "c-1on1").hireTitle);
+        ok(t.hireTitle && t.hireDesc, "has hire wording");
+        eq(p.find((x) => x.key === "c-offer").hireTitle, null);
+        eq(p.find((x) => x.key === "e-access").hireTitle, OB.TEMPLATES.Engineering.find((x) => x.key === "e-access").hireTitle);
+      });
       test("skipped template tasks are left out", () => {
         const p = OB.buildPlan("Engineering", T, ["e-oncall"]);
         ok(!p.some((t) => t.key === "e-oncall"));
@@ -86,8 +94,81 @@
         eq(f.upcoming, true); ok(f.tasks.length > 0);
       });
 
-      test("status: overdue → attention", () => eq(OB.hireStats(hire("Sales", OB.addDays(T, -10)), T).status, "attention"));
-      test("status: future start, nothing overdue → prestart", () => eq(OB.hireStats(hire("Sales", OB.addDays(T, 30)), T).status, "prestart"));
+      // D2: status says whose action is needed.
+      const doneUnless = (h, owners) => { h.tasks.forEach((t) => { if (!owners.includes(t.owner)) t.done = true; }); return h; };
+      test("status: manager's overdue task → action, counted in youOwe", () => {
+        const s = OB.hireStats(hire("Sales", OB.addDays(T, -10)), T);
+        eq(s.status, "action"); ok(s.youOwe > 0); ok(s.behind > 0);
+        eq(s.youOwe + s.behind + s.waitingIt + s.waitingHr + s.overdue.filter((t) => t.owner === "newhire" && t.isEvent).length, s.overdue.length);
+      });
+      test("status: only the hire's own overdue → behind (meetings not counted)", () => {
+        const h = doneUnless(hire("Engineering", OB.addDays(T, -6)), ["newhire"]);
+        const s = OB.hireStats(h, T);
+        eq(s.status, "behind"); eq(s.youOwe, 0);
+        eq(s.behind, s.overdue.filter((t) => !t.isEvent).length);
+        ok(s.overdue.some((t) => t.isEvent), "orientation is overdue for managers but not 'behind'");
+      });
+      test("status: before Day 1, the hire's lateness is only 'behind'", () => {
+        const h = doneUnless(hire("Engineering", OB.addDays(T, 4)), ["newhire"]);
+        const s = OB.hireStats(h, T);
+        ok(s.dayN < 0); eq(s.status, "behind"); eq(s.behind, 3); eq(s.youOwe, 0);
+      });
+      test("status: only IT/HR overdue → waiting", () => {
+        const h = doneUnless(hire("Engineering", OB.addDays(T, -6)), []);
+        h.tasks.find((t) => t.key === "c-accounts").done = false;
+        const s = OB.hireStats(h, T);
+        eq(s.status, "waiting"); eq(s.waitingIt, 1); eq(s.waitingHr, 0);
+        eq(s.waitingOn, { newhire: 0, manager: 0, it: 1, hr: 0 });
+      });
+      test("status: future start, nothing overdue → upcoming", () => eq(OB.hireStats(hire("Sales", OB.addDays(T, 30)), T).status, "upcoming"));
+      test("status: started, nothing overdue → ontrack", () => {
+        const h = hire("Sales", OB.addDays(T, -3));
+        h.tasks.forEach((t) => { if (t.dueDate < T) t.done = true; });
+        eq(OB.hireStats(h, T).status, "ontrack");
+      });
+      test("bar: counts the hire's own tasks (no meetings); tick = own tasks before today", () => {
+        const h = hire("Engineering", OB.addDays(T, -6), ["c-offer", "c-benefits", "c-laptop"]);
+        const o = OB.hireStats(h, T).own;
+        const own = h.tasks.filter((t) => t.owner === "newhire" && !t.isEvent);
+        eq(o.total, own.length);
+        eq(o.expected, own.filter((t) => t.dueDate < T).length);
+        eq(o.done, 2, "IT's laptop task isn't counted");
+        eq(o.doneExpected, 1, "c-benefits is done early, so it isn't in the fill");
+      });
+      test("F11: '<N> to catch up' chip = the bar's gap (tick minus fill), for every seed-like case", () => {
+        const cases = [
+          hire("Engineering", OB.addDays(T, 4), ["c-offer", "c-tax", "c-laptop"]), // Emily-like
+          hire("Engineering", OB.addDays(T, -6), ["c-offer", "c-tax", "c-deposit", "c-welcome", "c-laptop", "c-note", "c-orient", "e-devenv"]), // Marcus-like
+          hire("Sales", OB.addDays(T, -12), []),
+          hire("Marketing", OB.addDays(T, 10), []),
+        ];
+        cases.forEach((h, i) => {
+          const s = OB.hireStats(h, T);
+          eq(s.behind, s.own.expected - s.own.doneExpected, `case ${i}`);
+          eq(s.behind, s.own.toCatchUp, `case ${i}`);
+        });
+        eq(OB.hireStats(cases[0], T).behind, 1);
+        eq(OB.hireStats(cases[1], T).behind, 3);
+      });
+      test("F1: rolling week counts past-due items on today, list = strip, later kept apart", () => {
+        const mk = (d) => ({ t: { dueDate: d } });
+        const items = [mk(OB.addDays(T, -7)), mk(T), mk(OB.addDays(T, 1)), mk(OB.addDays(T, 3)), mk(OB.addDays(T, 6)), mk(OB.addDays(T, 7))];
+        const w = OB.rollingWeek(items, T);
+        eq(w.days.length, 7);
+        eq(w.days[0].date, T); eq(w.days[6].date, OB.addDays(T, 6));
+        eq(w.days.map((d) => d.items.length), [2, 1, 0, 1, 0, 0, 1]);
+        eq(w.total, 5); eq(w.items.length, w.total);
+        eq(w.days.reduce((n, d) => n + d.items.length, 0), w.total, "strip total = list length");
+        eq(w.later.length, 1);
+        eq(OB.rollingWeek([], T).total, 0);
+      });
+      test("status labels use neutral wording", () => {
+        const bad = /overdue|late|owe|behind|missed|fail|attention/i;
+        Object.values(OB.STATUS_LABEL).forEach((l) => ok(!bad.test(l), l));
+      });
+      test("week starts on Monday", () => {
+        eq(OB.weekStart("2026-11-05"), "2026-11-02"); eq(OB.weekStart("2026-11-02"), "2026-11-02"); eq(OB.weekStart("2026-11-08"), "2026-11-02");
+      });
       test("status: all done → complete", () => {
         const h = hire("Sales", OB.addDays(T, -3)); h.tasks.forEach((t) => (t.done = true));
         eq(OB.hireStats(h, T).status, "complete");
@@ -118,6 +199,162 @@
       test("custom task: phase from due date", () => {
         const t = OB.makeCustomTask({ title: "x", owner: "manager", dueDate: OB.addDays(T, 10) }, { startDate: T }, "david");
         eq(t.phase, "month1"); eq(t.custom, true);
+      });
+
+      // ---- Round 2: calm reminders, journey, Day 1 ----
+      test("isEvent is copied from templates into the plan", () => {
+        const p = OB.buildPlan("Engineering", T);
+        eq(p.find((t) => t.key === "c-orient").isEvent, true);
+        eq(p.find((t) => t.key === "c-1on1").isEvent, true);
+        eq(p.find((t) => t.key === "c-security").isEvent, false);
+      });
+      test("past-due event is pending, not one of the hire's own late tasks", () => {
+        const h = hire("Engineering", OB.addDays(T, -1));
+        const orient = h.tasks.find((t) => t.key === "c-orient");
+        eq(OB.isEventPending(orient, T), true);
+        ok(!OB.ownLate(h, T).some((t) => t.key === "c-orient"));
+        ok(OB.isOverdue(orient, T), "managers still see it as overdue");
+        orient.done = true;
+        eq(OB.isEventPending(orient, T), false);
+      });
+      test("countdown wording", () => {
+        eq(OB.countdownLabel(T, T), "Due today");
+        eq(OB.countdownLabel(OB.addDays(T, 1), T), "Due tomorrow");
+        eq(OB.countdownLabel(OB.addDays(T, 6), T), "Due in 6 days");
+        ok(!/in \d+ days/.test(OB.countdownLabel(OB.addDays(T, 7), T)), "a week out shows the date");
+      });
+      test("phase progress counts only the hire's own tasks", () => {
+        const h = hire("Engineering", OB.addDays(T, 4), ["c-offer", "c-tax", "c-laptop"]);
+        const p = OB.myPhaseProgress(h, T);
+        eq(p.phase, "before"); eq(p.label, "Before Day 1");
+        eq(p.total, h.tasks.filter((t) => t.owner === "newhire" && t.phase === "before").length);
+        eq(p.done, 2);
+      });
+      test("journey: segments 7/7/21 days, today marker before start", () => {
+        const j = OB.journeyModel(OB.addDays(T, 4), T);
+        eq(j.segments.map((s) => Math.round(s.width * 35)), [7, 7, 21]);
+        eq(j.segments.map((s) => s.state), ["current", "future", "future"]);
+        eq(j.pill, "Today · 4 days to go");
+        ok(j.todayFrac > 0 && j.todayFrac < 0.2);
+      });
+      test("journey: Day 2 marks Before Day 1 as past", () => {
+        const j = OB.journeyModel(OB.addDays(T, -1), T);
+        eq(j.pill, "Day 2");
+        eq(j.segments.map((s) => s.state), ["past", "current", "future"]);
+        eq(j.segments.map((s) => s.finished), [true, false, false]);
+        ok(!("fill" in j.segments[0]), "no date-proportional fill");
+      });
+      test("journey: a phase is finished early when all the hire's own tasks in it are done", () => {
+        const h = hire("Engineering", OB.addDays(T, 4), ["c-offer", "c-tax", "c-deposit", "c-welcome"]);
+        const done = OB.ownPhasesDone(h);
+        eq(done.before, true); eq(done.week1, false);
+        eq(OB.journeyModel(h.startDate, T, done).segments.map((s) => s.finished), [true, false, false]);
+        eq(OB.journeyModel(h.startDate, T).segments.map((s) => s.finished), [false, false, false]);
+      });
+      test("ics: VEVENT with floating DTSTART and CRLF line endings", () => {
+        const ics = OB.buildIcs({ uid: "x@y", date: "2026-11-09", start: "09:30", end: "13:30", summary: "First day", location: "Front desk, 2nd floor", description: "Hi; bring ID", stamp: "20261105T120000Z" });
+        ok(ics.includes("BEGIN:VEVENT\r\n"), "has VEVENT");
+        ok(ics.includes("\r\nDTSTART:20261109T093000\r\n"), "DTSTART floating local");
+        ok(ics.includes("\r\nDTEND:20261109T133000\r\n"), "DTEND");
+        ok(ics.includes("LOCATION:Front desk\\, 2nd floor"), "escapes commas");
+        ok(ics.startsWith("BEGIN:VCALENDAR\r\n") && ics.endsWith("END:VCALENDAR\r\n"));
+        ok(!/[^\r]\n/.test(ics), "every newline is CRLF");
+      });
+      test("Day 1 logistics: company default plus department override", () => {
+        eq(OB.day1For("Engineering").time, "09:30");
+        eq(OB.day1For("Engineering").place, OB.DAY1.place);
+        eq(OB.day1For("Customer Support").time, "08:30");
+        eq(OB.fmtTime("09:30"), "9:30am"); eq(OB.fmtTime("13:05"), "1:05pm");
+      });
+      test("banner: Day-1 reminder outranks overdue, 3 days out", () => {
+        const h = hire("Engineering", OB.addDays(T, 3));
+        eq(OB.pickBanner(h, T, {}).kind, "day1");
+        eq(OB.pickBanner(hire("Engineering", OB.addDays(T, 5)), T, {}).kind, "overdue");
+      });
+      test("banner: snooze hides until tomorrow, then the next kind shows", () => {
+        const h = hire("Engineering", OB.addDays(T, 3));
+        const b = OB.pickBanner(h, T, {});
+        const r = { hide: { [b.kindKey]: OB.addDays(T, 1) } };
+        eq(OB.pickBanner(h, T, r).kind, "overdue");
+        eq(OB.pickBanner(h, OB.addDays(T, 1), r).kind, "day1");
+      });
+      test("milestone: finishing your own Before Day 1 tasks, shown once", () => {
+        const h = hire("Engineering", OB.addDays(T, 5));
+        h.tasks.forEach((t) => { if (t.owner === "newhire" && t.phase === "before") t.done = true; });
+        const m = OB.milestoneFor(h, T);
+        eq(m.id, "phase-before"); ok(/^Before Day 1: done\./.test(m.title));
+        const k = `${h.id}:milestone:phase-before`;
+        eq(OB.pickBanner(h, T, { seen: { [k]: T } }).kind, "milestone", "still showing the day it first appeared");
+        eq(OB.pickBanner(h, OB.addDays(T, 1), { seen: { [k]: T } }), null, "not again the next day");
+      });
+
+      // ---- Editable templates (U3) ----
+      test("templates: no saved edits = defaults, and old/corrupt state falls back", () => {
+        eq(OB.mergeTemplates(OB.TEMPLATES, undefined), OB.TEMPLATES);
+        eq(OB.mergeTemplates(OB.TEMPLATES, { Company: "oops", Sales: [{ nope: 1 }] }).Company, OB.TEMPLATES.Company);
+        eq(OB.mergeTemplates(OB.TEMPLATES, { Sales: [{ nope: 1 }] }).Sales, [], "a saved (even empty) copy wins over the default");
+      });
+      test("templates: edited templates feed buildPlan and the add-hire preview", () => {
+        const added = OB.makeTemplateTask({ title: "Meet the platform team", owner: "newhire", dayOffset: 5, isEvent: true }, "u-test");
+        const tpl = OB.mergeTemplates(OB.TEMPLATES, { Engineering: [...OB.TEMPLATES.Engineering, added] });
+        const p = OB.buildPlan("Engineering", T, [], null, tpl);
+        const t = p.find((x) => x.key === "u-test");
+        ok(t, "new task is in the plan");
+        eq(t.dueDate, OB.addDays(T, 5)); eq(t.isEvent, true); eq(t.phase, "week1");
+        ok(OB.templateTasksFor("Engineering", tpl).some((x) => x.key === "u-test"), "preview uses it too");
+        ok(!OB.buildPlan("Engineering", T).some((x) => x.key === "u-test"), "defaults are unchanged");
+      });
+      test("templates: a removed task isn't in new plans", () => {
+        const tpl = OB.mergeTemplates(OB.TEMPLATES, { Company: OB.TEMPLATES.Company.filter((t) => t.key !== "c-harass") });
+        ok(!OB.buildPlan("Sales", T, [], null, tpl).some((t) => t.key === "c-harass"));
+        ok(OB.buildPlan("Sales", T).some((t) => t.key === "c-harass"), "still in the default");
+      });
+      test("templates: existing hire's tasks are unaffected by later edits", () => {
+        const h = hire("Engineering", T);
+        const before = JSON.stringify(h.tasks);
+        const saved = { Engineering: OB.mergeTemplates(OB.TEMPLATES, {}).Engineering.slice(1) };
+        saved.Engineering[0].title = "Renamed";
+        OB.buildPlan("Engineering", T, [], null, OB.mergeTemplates(OB.TEMPLATES, saved));
+        eq(JSON.stringify(h.tasks), before);
+        eq(OB.TEMPLATES.Engineering[1].title, "Set up your local dev environment", "defaults not mutated");
+      });
+      test("templates: validation", () => {
+        const base = { title: "Read the wiki", owner: "newhire", dayOffset: 3 };
+        ok(OB.validateTemplateTask(base, []).ok);
+        ok(OB.validateTemplateTask({ ...base, title: "  " }, []).errors.title, "title required");
+        ok(OB.validateTemplateTask({ ...base, title: "x".repeat(121) }, []).errors.title, "title ≤120");
+        ok(OB.validateTemplateTask({ ...base, desc: "x".repeat(241) }, []).errors.desc, "desc ≤240");
+        ok(OB.validateTemplateTask({ ...base, owner: "ceo" }, []).errors.owner, "owner");
+        ok(OB.validateTemplateTask({ ...base, dayOffset: 28 }, []).errors.dayOffset, "after Day 28");
+        ok(OB.validateTemplateTask({ ...base, dayOffset: -31 }, []).errors.dayOffset, "more than 30 days before");
+        ok(OB.validateTemplateTask({ ...base, dayOffset: NaN }, []).errors.dayOffset, "not a number");
+        ok(OB.validateTemplateTask({ ...base, dayOffset: 27 }, []).ok && OB.validateTemplateTask({ ...base, dayOffset: -30 }, []).ok, "edges ok");
+        const dup = OB.validateTemplateTask({ ...base, title: "read the WIKI" }, [{ title: "Read the wiki" }]);
+        ok(dup.ok && dup.warnings.length === 1, "duplicate title warns but doesn't block");
+      });
+      test("F9: 'day 0 of the job' is an error, not a silent '1 day before start'", () => {
+        const base = { title: "Read the wiki", owner: "newhire" };
+        const zero = OB.validateTemplateTask({ ...base, n: "0", mode: "day", dayOffset: OB.timingToOffset("0", "day") }, []);
+        eq(zero.ok, false); eq(zero.errors.dayOffset, "Day 1 is the first day.");
+        ok(OB.validateTemplateTask({ ...base, n: "0", mode: "before", dayOffset: OB.timingToOffset("0", "before") }, []).errors.dayOffset, "0 days before");
+        ok(OB.validateTemplateTask({ ...base, n: "1", mode: "day", dayOffset: OB.timingToOffset("1", "day") }, []).ok, "Day 1 ok");
+      });
+      test("templates: timing picker converts to dayOffset and back", () => {
+        eq(OB.timingToOffset("5", "before"), -5); eq(OB.timingToOffset(1, "day"), 0); eq(OB.timingToOffset(28, "day"), 27);
+        ok(Number.isNaN(OB.timingToOffset("", "day"))); ok(Number.isNaN(OB.timingToOffset("2.5", "day")));
+        eq(OB.offsetToTiming(-3), { n: 3, mode: "before" }); eq(OB.offsetToTiming(9), { n: 10, mode: "day" });
+      });
+      test("templates: new keys are unique, Edited marker, last-task rule", () => {
+        const k1 = OB.newTemplateKey(OB.TEMPLATES), k2 = OB.newTemplateKey(OB.TEMPLATES);
+        ok(k1 !== k2 && !Object.values(OB.TEMPLATES).flat().some((t) => t.key === k1));
+        eq(OB.templateIsEdited(OB.TEMPLATES.Sales.slice().reverse(), OB.TEMPLATES.Sales), false, "order alone isn't an edit");
+        eq(OB.templateIsEdited(OB.TEMPLATES.Sales.slice(1), OB.TEMPLATES.Sales), true);
+        eq(OB.removeTaskRule("Company", [{}]), "blocked"); eq(OB.removeTaskRule("Sales", [{}]), "confirm"); eq(OB.removeTaskRule("Sales", [{}, {}]), "ok");
+      });
+      test("templates: hire-facing wording is dropped when the new hire does the task", () => {
+        const t = OB.makeTemplateTask({ title: "X", owner: "newhire", dayOffset: 0, hireTitle: "Y" }, "k");
+        eq(t.hireTitle, undefined);
+        eq(OB.makeTemplateTask({ title: "X", owner: "it", dayOffset: 0, hireTitle: " Y " }, "k").hireTitle, "Y");
       });
 
       const out = document.getElementById("out");
