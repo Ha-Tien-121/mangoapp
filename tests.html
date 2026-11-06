@@ -14,6 +14,10 @@
     <ul id="out"></ul>
     <script src="js/data.js"></script>
     <script src="js/plan.js"></script>
+    <script src="js/newhire.js"></script>
+    <script src="js/manager.js"></script>
+    <script src="js/hr.js"></script>
+    <script src="js/hr2.js"></script>
     <script>
       const results = [];
       function test(name, fn) {
@@ -39,7 +43,9 @@
 
       test("Engineering plan = Company + Engineering tasks", () => {
         const p = OB.buildPlan("Engineering", T);
-        eq(p.length, OB.TEMPLATES.Company.length + OB.TEMPLATES.Engineering.length);
+        // A department name alone = the default profile (Onsite, Individual contributor), so conditional tasks are filtered.
+        const dflt = { department: "Engineering", workType: "Onsite", jobLevel: "Individual contributor" };
+        eq(p.length, OB.TEMPLATES.Company.filter((t) => OB.taskApplies(t, dflt)).length + OB.TEMPLATES.Engineering.length);
         ok(p.some((t) => t.key === "e-devenv"), "has dev env task");
         ok(!p.some((t) => t.key === "s-demo"), "no sales tasks");
       });
@@ -138,7 +144,7 @@
       test("F11: '<N> to catch up' chip = the bar's gap (tick minus fill), for every seed-like case", () => {
         const cases = [
           hire("Engineering", OB.addDays(T, 4), ["c-offer", "c-tax", "c-laptop"]), // Emily-like
-          hire("Engineering", OB.addDays(T, -6), ["c-offer", "c-tax", "c-deposit", "c-welcome", "c-laptop", "c-note", "c-orient", "e-devenv"]), // Marcus-like
+          hire("Engineering", OB.addDays(T, -6), ["c-offer", "c-tax", "c-deposit", "c-welcome", "c-laptop", "c-note", "c-orient", "c-badge", "e-devenv"]), // Marcus-like
           hire("Sales", OB.addDays(T, -12), []),
           hire("Marketing", OB.addDays(T, 10), []),
         ];
@@ -185,13 +191,18 @@
         eq(OB.canComplete("hr", { owner: "it" }), true);
       });
 
-      const good = { name: "Jo Bloggs", title: "Engineer", department: "Engineering", managerId: "david", startDate: OB.addDays(T, 14) };
+      const good = { name: "Jo Bloggs", title: "Engineer", department: "Engineering", managerId: "david", startDate: OB.addDays(T, 14), workType: "Onsite", jobLevel: "Individual contributor" };
       test("validate: good input passes", () => eq(OB.validateHire(good, T, []).ok, true));
       test("validate: blank name fails", () => ok(OB.validateHire({ ...good, name: "   " }, T, []).errors.name));
       test("validate: missing department fails", () => ok(OB.validateHire({ ...good, department: "" }, T, []).errors.department));
       test("validate: start > 4 weeks ago fails", () => ok(OB.validateHire({ ...good, startDate: OB.addDays(T, -40) }, T, []).errors.startDate));
       test("validate: start in past warns", () => ok(OB.validateHire({ ...good, startDate: OB.addDays(T, -3) }, T, []).warnings.length));
       test("validate: duplicate name warns", () => ok(OB.validateHire(good, T, [{ name: "jo bloggs" }]).warnings.length));
+      test("validate: work type and job level are required and must be from the lists", () => {
+        ok(OB.validateHire({ ...good, workType: "" }, T, []).errors.workType);
+        ok(OB.validateHire({ ...good, jobLevel: "CEO" }, T, []).errors.jobLevel);
+        eq(OB.validateHire({ ...good, workType: "Remote", jobLevel: "Intern" }, T, []).ok, true);
+      });
       test("validate: invalid date string fails", () => ok(OB.validateHire({ ...good, startDate: "2026-13-01" }, T, []).errors.startDate));
 
       test("custom task: needs title", () => ok(OB.validateCustomTask({ title: "", owner: "newhire", dueDate: T }, { startDate: T }).errors.title));
@@ -355,6 +366,1161 @@
         const t = OB.makeTemplateTask({ title: "X", owner: "newhire", dayOffset: 0, hireTitle: "Y" }, "k");
         eq(t.hireTitle, undefined);
         eq(OB.makeTemplateTask({ title: "X", owner: "it", dayOffset: 0, hireTitle: " Y " }, "k").hireTitle, "Y");
+      });
+
+      // ---- Round 3: smarter templates ----
+      const H = (workType, jobLevel, department) => ({ department: department || "Engineering", workType, jobLevel });
+      test("taskApplies: no rule (missing or empty) = everyone", () => {
+        ok(OB.taskApplies({}, H("Remote", "Intern")));
+        ok(OB.taskApplies({ appliesTo: {} }, H("Onsite", "People manager")));
+        ok(OB.taskApplies({ appliesTo: { workTypes: [], jobLevels: [] } }, H("Hybrid", "Individual contributor")));
+      });
+      test("taskApplies: one list", () => {
+        const t = { appliesTo: { workTypes: ["Remote"] } };
+        eq(OB.taskApplies(t, H("Remote", "Intern")), true);
+        eq(OB.taskApplies(t, H("Onsite", "Intern")), false);
+        eq(OB.taskApplies({ appliesTo: { workTypes: ["Onsite", "Hybrid"] } }, H("Hybrid")), true);
+      });
+      test("taskApplies: both lists must match", () => {
+        const t = { appliesTo: { workTypes: ["Remote"], jobLevels: ["People manager"] } };
+        eq(OB.taskApplies(t, H("Remote", "People manager")), true);
+        eq(OB.taskApplies(t, H("Remote", "Individual contributor")), false, "level mismatch");
+        eq(OB.taskApplies(t, H("Onsite", "People manager")), false, "work type mismatch");
+      });
+      test("taskApplies: hire without fields uses the defaults (Onsite, Individual contributor)", () => {
+        eq(OB.taskApplies({ appliesTo: { workTypes: ["Onsite"] } }, { department: "Sales" }), true);
+        eq(OB.taskApplies({ appliesTo: { jobLevels: ["People manager"] } }, { department: "Sales" }), false);
+        eq(OB.hireProfile({}), { workType: "Onsite", jobLevel: "Individual contributor" });
+      });
+      test("cleanAppliesTo: every box ticked = no restriction; unknown values dropped", () => {
+        eq(OB.cleanAppliesTo({ workTypes: ["Remote", "Onsite", "Hybrid"] }), null);
+        eq(OB.cleanAppliesTo({ workTypes: ["Remote", "Mars"], jobLevels: [] }), { workTypes: ["Remote"] });
+        eq(OB.appliesSummary({ workTypes: ["Remote"], jobLevels: ["People manager"] }), "People managers · Remote");
+        eq(OB.appliesSummary({ workTypes: ["Onsite", "Hybrid"] }), "Onsite or Hybrid");
+        eq(OB.appliesSummary(undefined), "");
+      });
+      test("buildPlan: remote vs onsite vs manager vs intern", () => {
+        const keys = (h) => OB.buildPlan(h, T).map((t) => t.key);
+        const remote = keys(H("Remote", "Individual contributor"));
+        const onsite = keys(H("Onsite", "Individual contributor"));
+        const mgr = keys(H("Hybrid", "People manager"));
+        const intern = keys(H("Onsite", "Intern"));
+        ok(remote.includes("c-ship-home") && remote.includes("c-home-desk") && remote.includes("c-remote-meet"), "remote tasks");
+        ok(!remote.includes("c-badge") && !remote.includes("c-desk"), "no badge/desk for remote");
+        ok(onsite.includes("c-badge") && onsite.includes("c-desk") && !onsite.includes("c-ship-home"), "onsite");
+        ok(mgr.includes("c-mgr-training") && mgr.includes("c-team-goals") && mgr.includes("c-badge"), "manager + hybrid");
+        ok(!onsite.includes("c-mgr-training"), "IC gets no manager training");
+        ok(intern.includes("c-intern-mentor") && !onsite.includes("c-intern-mentor"), "intern only");
+        ok(onsite.includes("c-offer") && remote.includes("c-offer"), "unconditional tasks for everyone");
+        eq(OB.buildPlan("Engineering", T).map((t) => t.key), onsite, "department name alone = Onsite IC");
+      });
+      test("previewPlan: reasons for conditional tasks, skipped tasks listed with their rule", () => {
+        const pv = OB.previewPlan(H("Remote", "People manager"), T, null);
+        eq(pv.tasks.find((t) => t.key === "c-home-desk").reason, "Remote");
+        eq(pv.tasks.find((t) => t.key === "c-mgr-training").reason, "People manager");
+        eq(pv.tasks.find((t) => t.key === "c-offer").reason, "");
+        eq(pv.skipped.map((t) => t.key).sort(), ["c-badge", "c-desk", "c-intern-mentor"]);
+        eq(pv.skipped.find((t) => t.key === "c-badge").rule, "Onsite or Hybrid");
+        eq(pv.tasks.length, OB.buildPlan(H("Remote", "People manager"), T).length, "preview = plan");
+        eq(OB.ruleReason({ appliesTo: { workTypes: ["Onsite", "Hybrid"] } }, H("Hybrid")), "Hybrid", "the hire's own value");
+      });
+      test("task types: type and isEvent stay compatible", () => {
+        eq(OB.taskType({ isEvent: true }), "meeting");
+        eq(OB.taskType({}), "task");
+        eq(OB.taskType({ type: "watch" }), "watch");
+        eq(OB.taskType({ type: "nonsense" }), "task");
+        const p = OB.buildPlan("Engineering", T);
+        const orient = p.find((t) => t.key === "c-orient");
+        eq(orient.type, "meeting"); eq(orient.isEvent, true);
+        eq(p.find((t) => t.key === "c-handbook").type, "acknowledge");
+        eq(p.find((t) => t.key === "c-handbook").isEvent, false);
+        eq(p.find((t) => t.key === "e-arch").type, "read");
+        const old = OB.mergeTemplates(OB.TEMPLATES, { Sales: [{ key: "x1", title: "Old meeting", owner: "newhire", dayOffset: 3, isEvent: true }] });
+        eq(old.Sales[0].type, "meeting", "saved isEvent becomes type meeting");
+        eq(OB.buildPlan("Sales", T, [], null, old).find((t) => t.key === "x1").isEvent, true);
+      });
+      test("links: http(s) only", () => {
+        ok(OB.isValidLink("https://intranet.example.com/handbook"));
+        ok(OB.isValidLink("http://example.com"));
+        ok(!OB.isValidLink("javascript:alert(1)"));
+        ok(!OB.isValidLink("www.example.com"));
+        ok(!OB.isValidLink("https://exa mple.com"));
+        ok(!OB.isValidLink("ftp://example.com"));
+        ok(!OB.isValidLink(""));
+        const t = OB.buildPlan("Engineering", T, [], null, OB.mergeTemplates(OB.TEMPLATES, { Engineering: [{ key: "bad", title: "X", owner: "newhire", dayOffset: 2, link: "javascript:alert(1)" }] }));
+        eq(t.find((x) => x.key === "bad").link, null, "a bad saved link never reaches a plan");
+      });
+      test("template task validation: type, link, who gets it", () => {
+        const base = { title: "Read the wiki", owner: "newhire", dayOffset: 3 };
+        ok(OB.validateTemplateTask({ ...base, type: "read", link: "https://wiki.example.com", appliesTo: { workTypes: ["Remote"], jobLevels: [] } }, []).ok);
+        ok(OB.validateTemplateTask({ ...base, link: "wiki.example.com" }, []).errors.link, "link must be http(s)");
+        ok(OB.validateTemplateTask({ ...base, link: "  " }, []).ok, "blank link is fine");
+        ok(OB.validateTemplateTask({ ...base, type: "poster" }, []).errors.type, "unknown type");
+        ok(OB.validateTemplateTask({ ...base, appliesTo: { workTypes: ["Moon"] } }, []).errors.appliesTo, "unknown work type");
+        ok(OB.validateTemplateTask({ ...base, appliesTo: { workTypes: [], jobLevels: [] } }, []).ok, "nothing ticked = everyone, not nobody");
+        const t = OB.makeTemplateTask({ ...base, type: "watch", link: " https://x.example.com ", appliesTo: { workTypes: ["Onsite", "Hybrid", "Remote"], jobLevels: ["Intern"] } }, "k");
+        eq(t.type, "watch"); eq(t.link, "https://x.example.com"); eq(t.appliesTo, { jobLevels: ["Intern"] });
+        eq(OB.makeTemplateTask({ ...base, type: "task", appliesTo: {} }, "k2").appliesTo, undefined);
+        eq(OB.makeTemplateTask({ ...base, type: "task" }, "k3").type, undefined, "plain task stores no type");
+      });
+      test("templates: changing type, link or who-gets-it marks a template as edited", () => {
+        const s = OB.TEMPLATES.Sales;
+        eq(OB.templateIsEdited(s.map((t) => ({ ...t })), s), false);
+        eq(OB.templateIsEdited(s.map((t, i) => (i ? t : { ...t, type: "watch" })), s), true);
+        eq(OB.templateIsEdited(s.map((t, i) => (i ? t : { ...t, appliesTo: { workTypes: ["Remote"] } })), s), true);
+        const c = OB.TEMPLATES.Company;
+        eq(OB.templateIsEdited(c.map((t) => (t.key === "c-orient" ? { ...t, type: undefined, isEvent: true } : t)), c), false, "isEvent = type meeting");
+      });
+      test("old saved state: hires get default work type and job level, tasks get type and link", () => {
+        const s = {
+          version: 1, hires: [{ id: "o", name: "Old", department: "Engineering", startDate: T, managerId: "david",
+            tasks: [{ key: "c-orient", title: "x", owner: "newhire" }, { key: "c-handbook", title: "y", owner: "newhire", isEvent: false }, { key: null, title: "Custom", owner: "manager", isEvent: true }] }],
+        };
+        OB.migrateState(s);
+        const h = s.hires[0];
+        eq([h.workType, h.jobLevel], ["Onsite", "Individual contributor"]);
+        eq(h.tasks.map((t) => [t.type, t.isEvent]), [["meeting", true], ["acknowledge", false], ["meeting", true]]);
+        eq(h.tasks[1].link, OB.TEMPLATES.Company.find((t) => t.key === "c-handbook").link);
+        eq(h.tasks[2].link, null);
+        const keep = { hires: [{ workType: "Remote", jobLevel: "Intern", tasks: [] }] };
+        eq(OB.migrateState(keep).hires[0].workType, "Remote", "existing values are kept");
+      });
+      test("Day 1: remote hires get a video call, no address", () => {
+        const r = OB.day1For("Engineering", "Remote");
+        eq(r.isRemote, true); eq(r.place, "Video call"); eq(r.address, ""); ok(OB.isValidLink(r.link));
+        eq(r.time, "09:30", "keeps the company time");
+        eq(OB.day1For("Customer Support", "Remote").time, "08:30", "and the department override");
+        eq(OB.day1For("Engineering", "Onsite").isRemote, false);
+        eq(OB.day1For("Engineering", "Hybrid").address, OB.DAY1.address);
+        const ics = OB.buildIcs({ uid: "x@y", date: "2026-11-09", start: "09:30", end: "13:30", summary: "First day", location: r.link, description: "Hi", stamp: "20261105T120000Z" });
+        ok(ics.includes("LOCATION:https://meet.example.com/mangoapps-day1"), "LOCATION is the link");
+      });
+      test("seed: at least one remote hire and one people manager", () => {
+        ok(OB.SEED_HIRES.some((h) => h.workType === "Remote"));
+        ok(OB.SEED_HIRES.some((h) => h.jobLevel === "People manager"));
+      });
+
+      // ---------- Round 4, pass A: Team, Schedule, Learning, Forms ----------
+      const MON = "2026-11-09";
+      function nh(profile, start, extra) {
+        const p = { id: "nh1", name: "Emily Chen", department: "Engineering", workType: "Onsite", jobLevel: "Individual contributor", managerId: "david", ...(profile || {}) };
+        return { ...p, startDate: start || MON, tasks: OB.buildPlan(p, start || MON), buddyId: null, learning: {}, forms: {}, ...(extra || {}) };
+      }
+      const keyTask = (h, k) => h.tasks.find((t) => t.key === k);
+
+      test("ics: several events in one calendar file", () => {
+        const ev = (i) => ({ uid: `e${i}@x`, date: "2026-11-09", start: "09:30", end: "10:00", summary: `Item ${i}; with, commas`, location: "Room A", description: "Hi", stamp: "20261105T120000Z" });
+        const ics = OB.buildIcs([ev(1), ev(2), ev(3)]);
+        eq((ics.match(/BEGIN:VEVENT/g) || []).length, 3);
+        eq((ics.match(/END:VEVENT/g) || []).length, 3);
+        eq((ics.match(/BEGIN:VCALENDAR/g) || []).length, 1, "one calendar");
+        ok(ics.includes("UID:e2@x") && ics.includes("SUMMARY:Item 3\\; with\\, commas"), "escaped summary");
+        ok(ics.endsWith("END:VCALENDAR\r\n"));
+        eq(OB.buildIcs(ev(1)), OB.buildIcs([ev(1)]), "one event = a list of one");
+      });
+      test("first week: five working days from the start date (weekends skipped)", () => {
+        eq(OB.firstWeekDates(MON), ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]);
+        eq(OB.firstWeekDates("2026-11-12"), ["2026-11-12", "2026-11-13", "2026-11-16", "2026-11-17", "2026-11-18"]);
+      });
+      test("first week agenda: Company + department items, meeting tasks merged without duplicates", () => {
+        const h = nh();
+        const ag = OB.firstWeekAgenda(h);
+        eq(ag.days.length, 5);
+        const d1 = ag.days[0].items;
+        const orient = d1.find((x) => x.id === "a-orient");
+        eq(orient.taskId, keyTask(h, "c-orient").id, "orientation agenda item is the c-orient task");
+        eq([orient.start, orient.end], ["09:30", "11:30"], "follows the Day-1 time");
+        eq(ag.items.filter((x) => x.taskId === keyTask(h, "c-orient").id).length, 1, "orientation shows once");
+        eq(ag.items.filter((x) => x.taskId === keyTask(h, "c-1on1").id).length, 1, "first 1:1 shows once");
+        ok(ag.days[1].items.some((x) => x.id === "a-e-standup"), "Engineering additions");
+        ok(!ag.items.some((x) => x.id.startsWith("a-s-")), "no Sales items");
+        eq(d1.map((x) => x.start), d1.map((x) => x.start).slice().sort(), "sorted by time");
+        ok(d1.find((x) => x.id === "a-lunch").with.startsWith("David Okafor"), "manager name");
+        // A done meeting task shows as done on the agenda.
+        keyTask(h, "c-orient").done = true;
+        eq(OB.firstWeekAgenda(h).days[0].items.find((x) => x.id === "a-orient").done, true);
+      });
+      test("first week agenda: unlinked Week 1 meeting tasks get a default time on their day", () => {
+        const h = nh({ workType: "Remote" });
+        const ag = OB.firstWeekAgenda(h);
+        const meet = ag.items.find((x) => x.taskId === keyTask(h, "c-remote-meet").id);
+        ok(meet && meet.fromTask, "remote meet-and-greet task is on the agenda");
+        eq([meet.day, meet.start, meet.end], [1, "15:00", "15:30"]);
+        eq(ag.days[0].items.find((x) => x.id === "a-orient").where, "Video call", "remote = video call");
+        eq(ag.days[0].items.find((x) => x.id === "a-lunch").title, "Video coffee with your manager");
+        // Two unlinked meetings on one day stack 30 minutes apart.
+        const h2 = nh();
+        h2.tasks.push({ id: "m1", key: null, title: "Meet design", owner: "newhire", type: "meeting", isEvent: true, phase: "week1", dayOffset: 2, dueDate: "2026-11-11", done: false });
+        h2.tasks.push({ id: "m2", key: null, title: "Meet product", owner: "newhire", type: "meeting", isEvent: true, phase: "week1", dayOffset: 2, dueDate: "2026-11-11", done: false });
+        const day3 = OB.firstWeekAgenda(h2).days[2].items.filter((x) => x.fromTask);
+        eq(day3.map((x) => x.start), ["15:00", "15:30"]);
+        // .ics for the week: one VEVENT per agenda item.
+        const ics = OB.buildIcs(OB.agendaEvents(h, ag, "20261105T120000Z"));
+        eq((ics.match(/BEGIN:VEVENT/g) || []).length, ag.items.length);
+      });
+      test("first week state: Day 1 before start, today during week 1, done after", () => {
+        eq(OB.weekState(MON, "2026-11-05").phase, "before");
+        eq(OB.weekState(MON, "2026-11-05").defaultDay, 0);
+        const w = OB.weekState(MON, "2026-11-11");
+        eq([w.phase, w.defaultDay, w.todayIndex], ["during", 2, 2]);
+        eq(OB.weekState(MON, "2026-11-13").todayIndex, 4);
+        eq(OB.weekState(MON, "2026-11-14").phase, "after");
+        eq(OB.weekState("2026-11-12", "2026-11-14").defaultDay, 2, "weekend inside week 1: next working day");
+      });
+      test("learning: progress, minutes left and up next", () => {
+        const h = nh();
+        let m = OB.learningModel(h);
+        eq(m.total, 7);
+        eq(m.done, 0);
+        eq(m.minutesLeft, 10 + 10 + 30 + 15 + 25 + 15 + 45);
+        eq(m.upNext.id, "l-welcome");
+        h.learning = { "l-welcome": { status: "done", at: "2026-11-05" }, "l-values": { status: "done", at: "2026-11-05" } };
+        keyTask(h, "c-security").done = true; // linked task done = learning item done
+        m = OB.learningModel(h);
+        eq(m.done, 3);
+        eq(m.minutesLeft, 15 + 25 + 15 + 45);
+        eq(OB.learningSummary(m), "3 of 7 done · about 1 h 40 min left");
+        eq(m.upNext.id, "l-tools");
+        OB.setLearningStatus(h, "l-e-review", "inprogress", "2026-11-05");
+        eq(OB.learningModel(h).upNext.id, "l-e-review", "an item in progress comes first");
+        eq(OB.minutesLabel(45), "45 min");
+        eq(OB.minutesLabel(60), "1 h");
+      });
+      test("learning: marking an item done ticks its plan task, and unticking the task resets it", () => {
+        const h = nh();
+        const t = OB.setLearningStatus(h, "l-e-arch", "done", "2026-11-06", "nh1");
+        eq(t.key, "e-arch");
+        eq([keyTask(h, "e-arch").done, keyTask(h, "e-arch").doneAt, keyTask(h, "e-arch").doneBy], [true, "2026-11-06", "nh1"]);
+        keyTask(h, "e-arch").done = false;
+        OB.syncLearningFromTask(h, keyTask(h, "e-arch"));
+        eq(OB.learningModel(h).items.find((x) => x.id === "l-e-arch").status, "todo");
+        OB.setLearningStatus(h, "l-e-devenv", "done", "2026-11-06");
+        OB.setLearningStatus(h, "l-e-devenv", "todo", "2026-11-06");
+        eq(keyTask(h, "e-devenv").done, false, "undo reopens the linked task");
+      });
+      test("Today: next learning item fills a focus slot only if it fits (max 3)", () => {
+        const up = { id: "l1", taskId: null };
+        eq(OB.todayLearningSlot([{ id: "a" }, { id: "b" }], up), "row");
+        eq(OB.todayLearningSlot([{ id: "a" }, { id: "b" }, { id: "c" }], up), "line");
+        eq(OB.todayLearningSlot([], up), "line", "nothing in focus: a quiet line");
+        eq(OB.todayLearningSlot([{ id: "a" }], { id: "l2", taskId: "a" }), null, "already in the focus list");
+        eq(OB.todayLearningSlot([{ id: "a" }], null), null);
+      });
+      test("forms: personal details validation", () => {
+        const h = nh();
+        const bad = OB.validateForm("personal", { phone: "12ab", street: "", city: "", zip: "123" }, h);
+        ok(bad.errors.phone && bad.errors.street && bad.errors.city && bad.errors.zip);
+        eq(bad.errors.zip, "ZIP codes are 5 digits, like 94107.");
+        eq(OB.validateForm("personal", { phone: "555 12", street: "1 Main", city: "X", zip: "94107" }, h).errors.phone, "Enter a phone number with 10 to 15 digits.");
+        ok(OB.validateForm("personal", { preferredName: "Em", pronouns: "she/her", phone: "(555) 123-4567", street: "1 Main St", city: "Oakland", zip: "94607" }, h).ok);
+        ok(OB.validateForm("personal", { pronouns: "zz", phone: "5551234567", street: "a", city: "b", zip: "94607" }, h).errors.pronouns);
+      });
+      test("forms: emergency contact validation", () => {
+        const r = OB.validateForm("emergency", { name: "", relationship: "Cousin", phone: "" });
+        ok(r.errors.name && r.errors.relationship && r.errors.phone);
+        ok(OB.validateForm("emergency", { name: "Ann Chen", relationship: "Parent", phone: "+1 555 123 4567" }).ok);
+      });
+      test("forms: W-4 validation", () => {
+        ok(OB.validateForm("w4", {}).errors.filingStatus);
+        ok(OB.validateForm("w4", { filingStatus: "Head of household", extra: "" }).ok, "extra is optional");
+        ok(OB.validateForm("w4", { filingStatus: "Head of household", extra: "$25.50" }).ok);
+        ok(OB.validateForm("w4", { filingStatus: "Head of household", extra: "25.555" }).errors.extra);
+        ok(OB.validateForm("w4", { filingStatus: "Head of household", extra: "-5" }).errors.extra);
+        ok(OB.validateForm("w4", { filingStatus: "Head of household", extra: "20000" }).errors.extra);
+      });
+      test("forms: direct deposit checks digits and lengths", () => {
+        const v = (d) => OB.validateForm("deposit", { bank: "Demo Bank", routing: "011000015", account: "123456789", accountConfirm: "123456789", ...d }).errors;
+        eq(v({}), {});
+        eq(v({ routing: "0110000" }).routing, "Routing numbers are 9 digits. This one has 7.");
+        eq(v({ routing: "011-000-015" }).routing, "Use digits only, no spaces or dashes.");
+        eq(v({ account: "123" }).account, "Account numbers are 4 to 17 digits.");
+        eq(v({ account: "123456789012345678" }).account, "Account numbers are 4 to 17 digits.");
+        eq(v({ account: "12 34" }).account, "Use digits only, no spaces or dashes.");
+        ok(v({ accountConfirm: "123456780" }).accountConfirm, "confirmation must match");
+        ok(v({ bank: "" }).bank);
+      });
+      test("forms: offer e-signature must match the hire's name (any capitals)", () => {
+        const h = nh();
+        ok(OB.validateForm("offer", { signature: "emily  CHEN ", agree: true }, h).ok);
+        eq(OB.validateForm("offer", { signature: "Emily C", agree: true }, h).errors.signature, "Type your name as it appears on the offer: Emily Chen.");
+        ok(OB.validateForm("offer", { signature: "", agree: true }, h).errors.signature);
+        ok(OB.validateForm("offer", { signature: "Emily Chen", agree: false }, h).errors.agree, "must agree");
+      });
+      test("forms: masking shows only the last 4 digits", () => {
+        eq(OB.maskNumber("123456789"), "••••6789");
+        eq(OB.maskNumber("000123456789"), "••••6789");
+        eq(OB.maskNumber("1234"), "••••");
+        eq(OB.maskNumber(""), "••••");
+        const rows = OB.formViewRows("deposit", { bank: "Demo", routing: "011000015", account: "000123456789" });
+        eq(rows.map((r) => r.value), ["Demo", "••••0015", "••••6789"]);
+        ok(!rows.some((r) => /Account number again/.test(r.label)), "no confirmation row");
+      });
+      test("forms: submitting completes the linked plan task (offer, W-4, deposit)", () => {
+        const h = nh();
+        const good = {
+          offer: { signature: "Emily Chen", agree: true },
+          w4: { filingStatus: "Married filing jointly", extra: "" },
+          deposit: { bank: "Demo", routing: "011000015", account: "12345678", accountConfirm: "12345678" },
+        };
+        for (const [id, key] of [["offer", "c-offer"], ["w4", "c-tax"], ["deposit", "c-deposit"]]) {
+          eq(keyTask(h, key).done, false);
+          const r = OB.submitForm(h, id, good[id], "2026-11-05", "nh1");
+          ok(r.ok, id);
+          eq([keyTask(h, key).done, keyTask(h, key).doneAt, keyTask(h, key).doneBy], [true, "2026-11-05", "nh1"], id);
+          eq(OB.formStatus(h, id).status, "submitted");
+        }
+        eq(h.forms.deposit.data.accountConfirm, undefined, "confirmation copy isn't saved");
+        // Personal details and emergency contact have no plan task; they only count on the Forms card.
+        const before = h.tasks.filter((t) => t.done).length;
+        ok(OB.submitForm(h, "emergency", { name: "Ann", relationship: "Parent", phone: "5551234567" }, "2026-11-05").ok);
+        eq(h.tasks.filter((t) => t.done).length, before);
+        eq([OB.formsSummary(h).done, OB.formsSummary(h).total], [4, 5]);
+        // Invalid submit changes nothing.
+        const h2 = nh();
+        ok(!OB.submitForm(h2, "deposit", { bank: "x", routing: "1" }, "2026-11-05").ok);
+        eq(keyTask(h2, "c-deposit").done, false);
+        eq(OB.formStatus(h2, "deposit").status, "todo");
+      });
+      test("forms: drafts, and tasks done before forms existed count as submitted", () => {
+        const h = nh();
+        OB.saveFormDraft(h, "personal", { phone: "555" }, "2026-11-04");
+        eq(OB.formStatus(h, "personal").status, "draft");
+        eq(OB.formsSummary(h).done, 0);
+        keyTask(h, "c-tax").done = true;
+        keyTask(h, "c-tax").doneAt = "2026-11-03";
+        const st = OB.formStatus(h, "w4");
+        eq([st.status, st.submittedAt, st.external], ["submitted", "2026-11-03", true]);
+        eq(OB.formForTask(keyTask(h, "c-deposit")).id, "deposit");
+        eq(OB.formForTask(keyTask(h, "c-welcome")), null);
+      });
+      test("buddy: team defaults, assignment from the manager's task, no duplicates on the Team page", () => {
+        eq(OB.defaultBuddyId("Engineering"), "nina");
+        eq(OB.defaultBuddyId("Nowhere"), null);
+        const h = nh();
+        eq(OB.buddyFor(h), null, "no buddy until assigned");
+        eq(OB.teamView(h).buddy, null);
+        const t = keyTask(h, "c-buddy");
+        t.done = true;
+        eq(OB.assignBuddyOnTask(h, t), "nina");
+        const tv = OB.teamView(h);
+        eq(tv.buddy.name, "Nina Alvarez");
+        eq(tv.manager.id, "david");
+        ok(!tv.others.some((p) => p.id === "nina"), "buddy isn't repeated in the grid");
+        eq(tv.others.length, OB.TEAMS.Engineering.members.length - 1);
+        h.buddyId = "raj";
+        OB.assignBuddyOnTask(h, t);
+        eq(h.buddyId, "raj", "an existing buddy is kept");
+        for (const d of OB.DEPARTMENTS) {
+          const team = OB.TEAMS[d];
+          ok(team && team.members.length >= 3 && team.members.length <= 5, `${d} team has 4–6 people with the manager`);
+          ok(team.members.every((m) => m.name && m.title && m.ask), `${d} members have name, title, ask`);
+        }
+      });
+      test("old saved state (before round 4) gets buddy, learning and forms defaults", () => {
+        const s = {
+          version: 1, hires: [
+            { id: "o1", name: "Old One", department: "Sales", startDate: T, managerId: "priya", tasks: [{ key: "c-buddy", title: "b", owner: "manager", done: true }] },
+            { id: "o2", name: "Old Two", department: "Engineering", startDate: T, managerId: "david", tasks: [{ key: "c-buddy", title: "b", owner: "manager", done: false }], forms: [1], learning: "x" },
+            { id: "o3", name: "Old Three", department: "Marketing", startDate: T, managerId: "lena", tasks: [], buddyId: "daniel", forms: { offer: { status: "weird" }, w4: { status: "draft" } } },
+          ],
+        };
+        OB.migrateState(s);
+        eq(s.hires.map((h) => h.buddyId), ["carlos", null, "daniel"]);
+        eq(s.hires[1].forms, {});
+        eq(s.hires[1].learning, {});
+        eq(Object.keys(s.hires[2].forms), ["w4"], "bad form records dropped");
+        eq(s.hires[2].forms.w4.data, {});
+        eq(OB.formsSummary(s.hires[0]).done, 0);
+      });
+      test("seed: Emily has a buddy and 2 of 5 forms; Marcus has no buddy yet", () => {
+        const em = OB.SEED_HIRES.find((h) => h.id === "emily");
+        eq(em.buddyId, "nina");
+        const mk = OB.SEED_HIRES.find((h) => h.id === "marcus");
+        ok(!mk.buddyId && !mk.doneKeys.includes("c-buddy"));
+        const plan = OB.buildPlan(em, MON);
+        for (const t of plan) if (em.doneKeys.includes(t.key)) t.done = true;
+        const forms = OB.seedForms({ name: em.name, tasks: plan });
+        eq(Object.keys(forms).sort(), ["offer", "w4"]);
+        eq(OB.formsSummary({ name: em.name, tasks: plan, forms }).done, 2);
+      });
+      test("remote Day-1 reminder wording reads naturally", () => {
+        eq(`Keep ${OB.day1For("Engineering", "Remote").bring}.`, "Keep a photo ID nearby for your I-9 check on camera.");
+      });
+
+      // ---------- Round 4, pass B: manager (js/manager.js) ----------
+      // A seed hire built the way store.js builds it, for a given "today".
+      function seedHire(id, today) {
+        const s = OB.SEED_HIRES.find((x) => x.id === id);
+        const startDate = OB.seedStartDate(s, today);
+        const tasks = OB.buildPlan(s, startDate, s.skip);
+        for (const t of tasks) if (s.doneKeys.includes(t.key)) Object.assign(t, { done: true, doneAt: t.dueDate < today ? t.dueDate : today });
+        const h = { id: s.id, name: s.name, title: s.title, department: s.department, workType: s.workType, jobLevel: s.jobLevel, role: s.role || null, managerId: s.managerId, startDate, tasks };
+        h.buddyId = s.buddyId || (s.doneKeys.includes("c-buddy") ? OB.defaultBuddyId(s.department) : null);
+        h.learning = {};
+        h.forms = OB.seedForms(h);
+        return OB.seedManagerExtras(h, s, today);
+      }
+      const DAVID = OB.PEOPLE.find((p) => p.id === "david");
+
+      test("seed (extra b): every seed hire starts on a Monday, whatever day the demo opens", () => {
+        for (let i = 0; i < 7; i++) {
+          const day = OB.addDays(T, i);
+          for (const s of OB.SEED_HIRES) eq(OB.parseDate(OB.seedStartDate(s, day)).getDay(), 1, `${s.id} on ${day}`);
+        }
+        eq(OB.SEED_HIRES.map((s) => OB.seedStartDate(s, T)), ["2026-11-09", "2026-10-26", "2026-10-19", "2026-11-16"]);
+        eq(OB.seedStartDate({ startOffset: 3 }, "2026-11-05"), "2026-11-09", "an older startOffset on a weekend moves to Monday");
+      });
+      test("seed: Marcus still has 3 to catch up and a to-do for David; Aisha is on track", () => {
+        const m = seedHire("marcus", T);
+        const s = OB.hireStats(m, T);
+        eq(s.behind, 3);
+        eq(s.youOwe, 1);
+        eq(OB.hireStats(seedHire("aisha", T), T).status, "ontrack");
+      });
+
+      test("readiness (B1): checklist and count for Emily", () => {
+        const em = seedHire("emily", T);
+        const r = OB.readinessFor(em, T);
+        eq(r.items.map((x) => x.id), ["laptop", "accounts", "tools", "buddy", "note", "oneonone", "forms"]);
+        eq(r.items.filter((x) => x.ready).map((x) => x.id), ["laptop", "buddy"]);
+        eq(r.headline, "Emily: 2 of 7 ready · starts Mon");
+        eq(r.items.find((x) => x.id === "tools").taskId, em.tasks.find((t) => t.key === "e-access").id, "tool access is the department's access task");
+        eq(r.items.find((x) => x.id === "forms").detail, "2 of 5 forms");
+        eq(r.items.find((x) => x.id === "buddy").detail, "Nina Alvarez");
+        eq(r.items.find((x) => x.id === "note").owner, "manager");
+        em.tasks.find((t) => t.key === "c-note").done = true;
+        em.oneOnOnes.push(OB.newOneOnOne(em, { templateId: "first", date: em.startDate, time: "14:00" }, "david", T));
+        const r2 = OB.readinessFor(em, T);
+        eq([r2.ready, r2.total], [4, 7]);
+        eq(r2.items.find((x) => x.id === "oneonone").detail, "Mon, Nov 9 · 2:00pm");
+        ok(r2.items.find((x) => x.id === "oneonone").noteId, "a booked 1:1 links to its note");
+      });
+      test("readiness: checks whose task isn't in the plan are left out; wording by day", () => {
+        const h = { ...seedHire("emily", T), tasks: OB.buildPlan({ department: "Engineering" }, "2026-11-09", ["c-accounts"]), buddyId: null, forms: {} };
+        const r = OB.readinessFor(h, T);
+        eq(r.total, 6);
+        ok(!r.items.some((x) => x.id === "accounts"));
+        eq(OB.startsWord("2026-11-09", "2026-11-09"), "starts today");
+        eq(OB.startsWord("2026-11-09", "2026-11-08"), "starts tomorrow");
+        eq(OB.startsWord("2026-11-16", T), "starts Mon, Nov 16");
+      });
+      test("readiness: hires starting within 14 days (Day 1 included), his only", () => {
+        const hires = ["emily", "marcus", "tom"].map((id) => seedHire(id, T));
+        eq(OB.readinessHires(hires, "david", T).map((h) => h.id), ["emily"]);
+        eq(OB.readinessHires(hires, "david", "2026-11-09").map((h) => h.id), ["emily"], "on Day 1");
+        eq(OB.readinessHires(hires, "david", "2026-11-10").map((h) => h.id), [], "not after Day 1");
+        eq(OB.readinessHires(hires, "lena", T).map((h) => h.id), ["tom"]);
+        eq(OB.readinessHires(hires, "omar", T), [], "empty state");
+      });
+      test("buddy picker (extra a): choosing sets buddyId and completes the task", () => {
+        const m = seedHire("marcus", T);
+        eq(OB.chooseBuddy(m, "nobody", T, "david"), null);
+        eq(m.buddyId, null);
+        const b = OB.chooseBuddy(m, "kenji", T, "david");
+        eq(b.name, "Kenji Watanabe");
+        eq(m.buddyId, "kenji");
+        const t = m.tasks.find((x) => x.key === "c-buddy");
+        eq([t.done, t.doneBy, t.doneAt], [true, "david", T]);
+        eq(OB.teamView(m).buddy.id, "kenji", "the new hire's Team tab shows the chosen buddy");
+        OB.chooseBuddy(m, "raj", T, "david");
+        eq(m.buddyId, "raj", "changing the buddy later");
+      });
+
+      test("1:1 (B2): note from a template, points ticked, follow-up becomes a plan task", () => {
+        ok(OB.ONE_ON_ONE_TEMPLATES.length >= 3 && OB.ONE_ON_ONE_TEMPLATES.length <= 4);
+        ok(OB.ONE_ON_ONE_TEMPLATES.every((t) => t.points.length >= 4 && t.points.length <= 6), "4–6 talking points each");
+        const em = seedHire("emily", T);
+        eq(OB.validateOneOnOne({ templateId: "nope", date: "", time: "" }, em).errors, { templateId: "Pick an agenda template.", date: "Pick a date.", time: "Pick a time." });
+        const input = { templateId: "week1", date: OB.suggestedOneOnOneDate(em, "week1", T), time: "15:00" };
+        eq(input.date, "2026-11-13", "end of week 1 is Friday");
+        ok(OB.validateOneOnOne(input, em).ok);
+        const n = OB.newOneOnOne(em, input, "david", T);
+        eq(n.title, "End of week 1");
+        eq(OB.pointsCovered(n), { done: 0, total: 5 });
+        n.points[0].done = n.points[2].done = true;
+        eq(OB.pointsCovered(n), { done: 2, total: 5 });
+        eq(OB.addFollowUp(n, "   ").ok, false);
+        const fu = OB.addFollowUp(n, "Book time with Raj on the architecture").followUp;
+        const bad = OB.followUpToTask(em, n, fu.id, { owner: "newhire", dueDate: OB.addDays(em.startDate, 60) }, "david");
+        ok(!bad.ok && bad.errors.dueDate, "due date must be inside the plan");
+        const before = em.tasks.length;
+        const r = OB.followUpToTask(em, n, fu.id, { owner: "newhire", dueDate: "2026-11-16" }, "david");
+        ok(r.ok);
+        eq(em.tasks.length, before + 1);
+        eq([r.task.title, r.task.owner, r.task.custom, r.task.fromOneOnOne, r.task.phase], ["Book time with Raj on the architecture", "newhire", true, n.id, "month1"]);
+        eq(fu.taskId, r.task.id);
+        eq(OB.followUpToTask(em, n, fu.id, { owner: "newhire", dueDate: "2026-11-16" }, "david").task.id, r.task.id, "only once");
+        eq(em.tasks.length, before + 1);
+      });
+      test("1:1: planned and past lists; dates on weekdays; calendar event", () => {
+        const m = seedHire("marcus", T);
+        const l = OB.oneOnOnesFor(m, T);
+        eq(l.planned.map((n) => n.id), ["oo-marcus-3"]);
+        eq(l.past.map((n) => n.id), ["oo-marcus-2", "oo-marcus-1"], "latest first");
+        ok(m.oneOnOnes.every((n) => ![0, 6].includes(OB.parseDate(n.date).getDay())));
+        eq(OB.suggestedOneOnOneDate({ startDate: "2026-11-09" }, "day30", T), "2026-12-08");
+        eq(OB.suggestedOneOnOneDate({ startDate: "2026-10-01" }, "first", T), "2026-11-05", "a passed date becomes today");
+        const ics = OB.buildIcs(OB.oneOnOneEvent(l.planned[0], m, "20261105T120000Z"));
+        ok(ics.includes("SUMMARY:30-day check-in: Marcus Johnson") && ics.includes("DTEND:20261124T143000"));
+      });
+
+      test("goals (B3): horizon counts read '30 days: 2 of 3 done'", () => {
+        const m = seedHire("marcus", T);
+        const h30 = OB.goalHorizons(m)[0];
+        eq(h30.line, "30 days: 1 of 3 done");
+        m.goals.find((g) => g.suggestedId === "g-c-meet").status = "done";
+        eq(OB.goalHorizons(m).map((x) => x.line), ["30 days: 2 of 3 done", "60 days: 0 of 1 done", "90 days: no goals yet"]);
+        eq(OB.goalsCardLine(m, T).horizon, 30);
+      });
+      test("goals: suggested goals add once; own goals validated; status and note", () => {
+        const em = seedHire("emily", T);
+        eq(em.goals, []);
+        eq(OB.goalsCardLine(em, T), null);
+        const n = OB.suggestedGoalsFor(em).length;
+        ok(n >= 5, "Company + Engineering suggestions");
+        const g = OB.addSuggestedGoal(em, "g-e-pr", T);
+        eq([g.horizon, g.status, g.suggestedId], [30, "todo", "g-e-pr"]);
+        eq(OB.addSuggestedGoal(em, "g-e-pr", T), null, "not twice");
+        eq(OB.suggestedGoalsFor(em).length, n - 1);
+        eq(OB.addGoal(em, { horizon: "45", title: "" }, T).errors, { title: "Write the goal.", horizon: "Pick 30, 60 or 90 days." });
+        const own = OB.addGoal(em, { horizon: "90", title: " Present at the guild ", desc: "" }, T).goal;
+        eq([own.title, own.horizon], ["Present at the guild", 90]);
+        eq(OB.setGoalStatus(em, own.id, "weird", T), null);
+        eq(OB.setGoalStatus(em, own.id, "doing", T).status, "doing");
+        eq(OB.setGoalNote(em, own.id, "x".repeat(281), T).ok, false);
+        eq(OB.setGoalNote(em, own.id, " Slides drafted ", T).goal.note, "Slides drafted");
+      });
+
+      test("nudges (B4): preferences, In-app only stands alone", () => {
+        eq(OB.cleanNotifyPrefs(undefined), { channels: ["email"], digestDay: "Mon", digestTime: "09:00", dayBefore: true, todoReminders: true });
+        eq(OB.cleanNotifyPrefs({ channels: ["inapp", "slack"], digestDay: "Sun", digestTime: "25:00", dayBefore: "yes" }).channels, ["slack"]);
+        eq(OB.cleanNotifyPrefs({ channels: [] }).channels, ["inapp"]);
+        let p = OB.setChannel(OB.defaultNotifyPrefs(), "slack", true);
+        eq(p.channels, ["email", "slack"]);
+        eq(OB.channelSummary(p), "Email and Slack");
+        p = OB.setChannel(p, "inapp", true);
+        eq(p.channels, ["inapp"]);
+        eq(OB.channelSummary(p), "In-app only");
+        p = OB.setChannel(p, "teams", true);
+        eq(p.channels, ["teams"]);
+        eq(OB.setChannel(p, "teams", false).channels, ["inapp"], "nothing ticked = in-app only");
+      });
+      test("nudges: digest and day-before messages are built from data, in neutral words", () => {
+        const hires = ["emily", "marcus"].map((id) => seedHire(id, T));
+        const d = OB.buildDigest(DAVID, hires, T, OB.defaultNotifyPrefs());
+        eq(d.subject, "Your onboarding week: 4 to-dos for you");
+        eq(d.lines.map((l) => l.kind), ["todo", "todo", "todo", "todo", "catchup", "start"]);
+        // Round 4 C1 weekend rule: "1 day before start" (Sun Oct 25) moves to the Friday before (was "Sun, Oct 25").
+        eq(d.lines[0].text, "Assign an onboarding buddy for Marcus, open since Fri, Oct 23");
+        eq(d.lines[1].text, "Send welcome note and first-week schedule for Emily, tomorrow");
+        ok(d.lines[0].taskId && d.lines[0].hireId === "marcus", "each line says which hire and task");
+        eq(d.lines[4], { kind: "catchup", text: "Marcus has 3 to catch up", hireId: "marcus", taskId: null, show: "catchup" });
+        eq(d.lines[5].text, "Emily starts Monday · 2 of 7 ready for Day 1");
+        ok(d.email.body.startsWith("Hi David,") && d.email.body.includes("• Marcus has 3 to catch up"));
+        ok(d.chat.startsWith("*Your onboarding week*"));
+        const off = OB.buildDigest(DAVID, hires, T, { todoReminders: false });
+        ok(!off.lines.some((l) => l.kind === "todo") && off.subject === "Your onboarding week: 2 people onboarding");
+        const calm = OB.buildDigest(OB.PEOPLE.find((p) => p.id === "omar"), hires, T);
+        eq(calm.lines.map((l) => l.kind), ["calm"]);
+        eq(OB.nudgeHire(hires, "david", T).id, "emily");
+        const n = OB.buildNudge(DAVID, hires[0], "2026-11-08");
+        eq(n.subject, "Emily starts tomorrow");
+        eq(n.lines.length, 4);
+        for (const m of [d, off, calm, n]) {
+          eq(OB.bannedWords(`${m.subject} ${m.email.body} ${m.chat} ${m.lines.map((l) => l.text).join(" ")}`), [], "no banned words");
+        }
+      });
+      test("nudges: reminder drafts are polite, pre-filled and neutral", () => {
+        const em = seedHire("emily", T);
+        const it = OB.reminderDraft(em, { owner: "it", label: "Create email and Slack accounts" }, DAVID, T);
+        eq(it.to, "IT help desk");
+        eq(it.subject, "Quick check: Create email and Slack accounts for Emily Chen");
+        ok(it.body.includes("who starts Mon") && it.body.endsWith("Thanks,\nDavid"));
+        const nh = OB.reminderDraft(em, { owner: "newhire", label: "your pre-boarding forms" }, DAVID, T);
+        eq(nh.to, "Emily Chen");
+        ok(nh.body.startsWith("Hi Emily,"));
+        const hr = OB.reminderDraft(em, { owner: "hr", label: "Set up desk and parking" }, DAVID, T);
+        eq(hr.to, "Sarah Kim (HR)");
+        for (const r of [it, nh, hr]) eq(OB.bannedWords(r.subject + r.body), []);
+        eq(OB.bannedWords("This is OVERDUE and late, the latest attention"), ["overdue", "late", "attention"], "whole words only (not 'latest')");
+      });
+      test("nudges: outbox entries are labelled 'Demo — not actually sent', newest first", () => {
+        eq(OB.validateReminder({ to: "", subject: "", body: "", channel: "fax" }).errors, { to: "Say who it's for.", subject: "Add a subject.", body: "Write a short message.", channel: "Pick how to send it." });
+        const s = { outbox: [] };
+        const e1 = OB.makeOutboxEntry({ kind: "reminder", channel: "email", to: " IT help desk ", subject: "Hi", body: "Body", fromId: "david", hireId: "emily" }, T, "10:05");
+        eq([e1.label, e1.demo, e1.to, e1.date, e1.time], ["Demo — not actually sent", true, "IT help desk", T, "10:05"]);
+        OB.addToOutbox(s, e1);
+        const prefs = OB.setChannel(OB.defaultNotifyPrefs(), "slack", true);
+        const d = OB.buildDigest(DAVID, [seedHire("emily", T)], T, prefs);
+        const tests = OB.testEntries(prefs, d, "test-digest", DAVID, T, "10:06");
+        eq(tests.map((e) => [e.channel, e.kind]), [["email", "test-digest"], ["slack", "test-digest"]]);
+        eq(tests[0].body, d.email.body);
+        eq(tests[1].body, d.chat);
+        for (const e of tests) OB.addToOutbox(s, e);
+        eq(s.outbox[0].channel, "slack", "newest first");
+        eq(s.outbox.length, 3);
+        for (let i = 0; i < 50; i++) OB.addToOutbox(s, e1);
+        eq(s.outbox.length, 40, "keeps the last 40");
+      });
+
+      test("routes (U3): hash parsing and building for every drill-down", () => {
+        const cases = [
+          ["#/team", { tab: "team" }],
+          ["#/team?day=2026-11-06", { tab: "team", day: "2026-11-06" }],
+          ["#/hire/marcus?show=catchup", { tab: "team", hireId: "marcus", show: "catchup" }],
+          ["#/hire/emily?task=t-abc-12", { tab: "team", hireId: "emily", task: "t-abc-12" }],
+          ["#/readiness", { tab: "readiness" }],
+          ["#/1on1s/marcus/oo-marcus-1", { tab: "oneonones", hireId: "marcus", noteId: "oo-marcus-1" }],
+          ["#/1on1s", { tab: "oneonones" }],
+          ["#/goals/emily", { tab: "goals", hireId: "emily" }],
+          ["#/nudges", { tab: "notifications" }],
+        ];
+        for (const [h, r] of cases) {
+          eq(OB.parseRoute(h), r, h);
+          eq(OB.buildRoute(r), h, `build ${h}`);
+        }
+        eq(OB.parseRoute(""), { tab: "team" });
+        eq(OB.parseRoute("#/hire/marcus?show=everything"), { tab: "team", hireId: "marcus" }, "unknown filter dropped");
+        eq(OB.parseRoute("#/hire/<script>"), { tab: "team" }, "bad ids ignored");
+        eq(OB.parseRoute("#/team?day=2026-02-30"), { tab: "team" });
+        eq(OB.parseRoute("#/%E0%A4%A"), { tab: "team" }, "broken encoding");
+      });
+      test("routes: drill-down filters match the chips' numbers", () => {
+        const m = seedHire("marcus", T);
+        const s = OB.hireStats(m, T);
+        const cu = OB.filterTasks(m, { show: "catchup" }, T);
+        eq(cu.length, s.behind, "'3 to catch up' opens exactly those 3");
+        eq(cu.map((t) => t.key), ["c-security", "e-arch", "c-handbook"]);
+        eq(OB.showLabel({ show: "catchup" }, cu.length), "3 to catch up");
+        eq(OB.filterTasks(m, { show: "foryou" }, T).map((t) => t.key), ["c-buddy"]);
+        eq(OB.filterTasks(m, { show: "waiting" }, T), []);
+        const one = m.tasks[3];
+        eq(OB.filterTasks(m, { task: one.id }, T), [one]);
+        eq(OB.filterTasks(m, {}, T), []);
+      });
+
+      test("migration (pass B): older saves get oneOnOnes, goals, notify and outbox", () => {
+        const s = {
+          version: 1, viewerId: "david",
+          hires: [
+            { id: "o1", name: "Old One", department: "Sales", startDate: T, managerId: "priya", tasks: [] },
+            { id: "o2", name: "Old Two", department: "Engineering", startDate: T, managerId: "david", tasks: [],
+              oneOnOnes: [null, { id: "n1", date: "bad" }, { id: "n2", date: T, templateId: "zzz", points: [{ text: "a", done: 1 }, 5] }],
+              goals: [{ id: "g1", title: "Ok", horizon: 45, status: "weird" }, { id: "g2", title: "" }, "x"] },
+          ],
+          notify: { david: { channels: ["fax"] } }, outbox: [{ subject: "Hi", label: "Sent!" }, 3],
+        };
+        OB.migrateState(s);
+        eq(s.hires[0].oneOnOnes, []);
+        eq(s.hires[0].goals, []);
+        eq(s.hires[1].oneOnOnes.length, 1);
+        eq([s.hires[1].oneOnOnes[0].templateId, s.hires[1].oneOnOnes[0].time, s.hires[1].oneOnOnes[0].points], ["first", "14:00", [{ text: "a", done: true }]]);
+        eq(s.hires[1].goals.map((g) => [g.id, g.horizon, g.status]), [["g1", 30, "todo"]]);
+        eq(s.notify.david.channels, ["inapp"]);
+        eq(s.outbox.length, 1);
+        eq(s.outbox[0].label, "Demo — not actually sent", "every outbox entry says it wasn't sent");
+        const t = { version: 1, hires: [] };
+        OB.migrateState(t);
+        eq([t.notify, t.outbox], [{}, []]);
+      });
+
+
+      // ---------- Round 4, pass C1: HR (js/hr.js) ----------
+      // Weekend rule (C1): before Day 1 a weekend date moves to the Friday before; from Day 1 on, to the Monday after.
+      test("weekend rule: before Day 1 -> previous Friday, otherwise -> next Monday", () => {
+        const MONDAY = "2026-11-09";
+        eq(OB.weekdayDue("2026-11-08", MONDAY), "2026-11-06", "Sunday before start -> Friday");
+        eq(OB.weekdayDue("2026-11-07", MONDAY), "2026-11-06", "Saturday before start -> Friday");
+        eq(OB.weekdayDue("2026-11-14", MONDAY), "2026-11-16", "Saturday after start -> Monday");
+        eq(OB.weekdayDue("2026-11-15", MONDAY), "2026-11-16", "Sunday after start -> Monday");
+        eq(OB.weekdayDue("2026-11-11", MONDAY), "2026-11-11", "weekdays stay");
+        const p = OB.buildPlan("Engineering", MONDAY);
+        eq(p.find((t) => t.key === "c-buddy").dueDate, "2026-11-06", "c-buddy (1 day before) is the Friday before");
+        ok(p.every((t) => ![0, 6].includes(OB.parseDate(t.dueDate).getDay())), "no plan task lands on a weekend");
+        eq(p.find((t) => t.key === "c-buddy").dayOffset, -1, "dayOffset and phase stay the template's");
+        eq(OB.previewPlan({ department: "Engineering" }, MONDAY).tasks.find((t) => t.key === "c-buddy").dueDate, "2026-11-06", "preview = plan");
+        // A Thursday start: Day 3 (Saturday) moves to Monday, still in Week 1.
+        const q = OB.buildPlan("Engineering", T);
+        const dev = q.find((t) => t.key === "e-devenv");
+        eq([dev.dueDate, dev.phase], ["2026-11-09", "week1"]);
+      });
+
+      test("CSV parser: quotes, commas and line breaks inside quotes, escaped quotes, CRLF, blank lines", () => {
+        const csv = 'name,title\r\n"Rivera, Sam","Says ""hi"""\r\n\r\nMia,"Line one\r\nline two"\r\n,,\r\nLast,One';
+        const r = OB.parseCsv(csv);
+        eq(r.map((x) => x.cells), [["name", "title"], ["Rivera, Sam", 'Says "hi"'], ["Mia", "Line one\nline two"], ["Last", "One"]]);
+        eq(r.map((x) => x.line), [1, 2, 4, 7], "physical line numbers, blank lines skipped");
+        eq(OB.parseCsv("﻿a,b\nc,d\n").map((x) => x.cells), [["a", "b"], ["c", "d"]], "BOM and trailing newline");
+        eq(OB.parseCsv("a,b\rc,d").length, 2, "old Mac CR line ends");
+        eq(OB.parseCsv("a,,c").map((x) => x.cells), [["a", "", "c"]], "empty middle cell");
+        eq(OB.parseCsv(""), []);
+      });
+      test("CSV header mapping: any case, spaces or underscores; missing columns named", () => {
+        const m = OB.mapHeader(["Full Name", "Job Title", "DEPT", "Reports to", "start_date", "Work type", "Level", "Role"]);
+        eq(m.missing, []);
+        eq([m.map.name, m.map.title, m.map.department, m.map.manager, m.map.startDate, m.map.workType, m.map.jobLevel, m.map.role], [0, 1, 2, 3, 4, 5, 6, 7]);
+        eq(OB.mapHeader(["name", "title"]).missing, ["department", "manager", "start date"]);
+      });
+      const existingForBulk = () => [{ id: "emily", name: "Emily Chen" }];
+      const BULK =
+        "name,title,department,manager,start date,work type,job level,role\n" +
+        "Jordan Lee,Backend Engineer,engineering,david,2026-11-23,hybrid,,Backend Engineer\n" +
+        '"Rivera, Sam",Account Executive,Sales,Priya Shah,11/30/2026,,,\n' +
+        "No Dept,Thing,Finance,Nobody,2026-13-01,Space,,\n" +
+        "Emily Chen,Software Engineer,Engineering,David Okafor,2026-11-23,,,\n" +
+        "Jordan Lee,Again,Engineering,David,2026-11-30,,,\n" +
+        "Wrong Role,Rep,Sales,Priya,2026-11-30,,,Backend Engineer\n";
+      test("bulk import: per-row validation in plain words, with row numbers", () => {
+        const pv = OB.bulkPreview(BULK, T, existingForBulk(), OB.ROLE_TEMPLATES);
+        eq(pv.headerError, null);
+        eq(pv.rows.map((r) => r.row), [2, 3, 4, 5, 6, 7]);
+        const [a, b, c, , , f] = pv.rows;
+        ok(a.ok, "row 2 is fine (case-insensitive department, manager by first name, work type)");
+        eq([a.input.department, a.input.managerId, a.input.workType, a.input.jobLevel, a.input.role], ["Engineering", "david", "Hybrid", "Individual contributor", "role-backend"]);
+        ok(b.ok && b.input.name === "Rivera, Sam" && b.input.startDate === "2026-11-30", "quoted comma name, US date");
+        ok(!c.ok, "row 4 needs fixes");
+        ok(c.errors.some((x) => /“Finance” isn't a department/.test(x)), "department message");
+        ok(c.errors.some((x) => /couldn't find a manager called “Nobody”/.test(x)), "manager message");
+        ok(c.errors.some((x) => /“2026-13-01” isn't a date/.test(x)), "date message");
+        ok(c.errors.some((x) => /Work type “Space”/.test(x)), "work type message");
+        ok(!f.ok && f.errors.some((x) => /No “Backend Engineer” role in Sales/.test(x)), "a role from another department");
+        eq(OB.bulkPreview("name,title\nA,B", T, []).headerError.includes("Missing: department, manager, start date"), true);
+        ok(OB.bulkPreview("", T, []).headerError, "empty paste");
+      });
+      test("bulk import: duplicates (already onboarding, or twice in the paste) are warned and skipped unless allowed", () => {
+        const pv = OB.bulkPreview(BULK, T, existingForBulk(), OB.ROLE_TEMPLATES);
+        const em = pv.rows[3];
+        const jl2 = pv.rows[4];
+        ok(em.ok && em.duplicate && /Emily Chen is already onboarding/.test(em.warnings[0]));
+        ok(jl2.ok && jl2.duplicate && /also in row 2/.test(jl2.warnings[0]));
+        ok(!pv.rows[0].duplicate, "the first Jordan Lee isn't the duplicate");
+        const c = OB.bulkCounts(pv.rows);
+        eq([c.ready, c.fix, c.dupSkipped], [2, 2, 2]);
+        eq(OB.bulkCounts(pv.rows, new Set([5])).ready, 3, "Import anyway for row 5");
+        const hs = OB.bulkImport(pv.rows, new Set([5]), T);
+        eq(hs.map((h) => h.name), ["Jordan Lee", "Rivera, Sam", "Emily Chen"]);
+      });
+      test("bulk import builds plans exactly like single add", () => {
+        const pv = OB.bulkPreview(BULK, T, [], OB.ROLE_TEMPLATES);
+        const h = OB.bulkImport(pv.rows, null, T)[0];
+        const single = OB.makeHire({ ...pv.rows[0].input }, T);
+        eq(h.tasks.map((t) => [t.key, t.dueDate]), single.tasks.map((t) => [t.key, t.dueDate]));
+        eq([h.role, h.pulses, h.oneOnOnes, h.goals], ["role-backend", {}, [], []]);
+        ok(h.tasks.some((t) => t.key === "r-be-runbook"), "role tasks included");
+      });
+
+      test("role templates: plan = Company + department + role, with the role as the source", () => {
+        const hireIn = { department: "Engineering", workType: "Hybrid", jobLevel: "Individual contributor", role: "role-backend" };
+        const p = OB.buildPlan(hireIn, "2026-11-09");
+        const rt = p.filter((t) => t.sourceKind === "role");
+        eq(rt.map((t) => t.key).sort(), ["r-be-db", "r-be-guild", "r-be-review", "r-be-runbook"]);
+        ok(rt.every((t) => t.source === "Backend Engineer"), "From: Backend Engineer");
+        const pv = OB.previewPlan(hireIn, "2026-11-09");
+        eq(pv.tasks.find((t) => t.key === "r-be-runbook").source, "Backend Engineer");
+        eq(pv.tasks.find((t) => t.key === "r-be-runbook").sourceKind, "role");
+        ok(!OB.buildPlan({ ...hireIn, department: "Sales" }, T).some((t) => t.sourceKind === "role"), "a role only counts in its own department");
+        const edited = { ...OB.mergeTemplates(OB.TEMPLATES, {}), roles: [{ id: "role-backend", name: "Backend Engineer", department: "Engineering", tasks: [{ key: "u1", title: "Custom role task", owner: "newhire", dayOffset: 2 }] }] };
+        eq(OB.buildPlan(hireIn, T, [], null, edited).filter((t) => t.sourceKind === "role").map((t) => t.key), ["u1"], "HR's edited roles win");
+      });
+      test("role validation: role must be in the department; manager from another department warns (F6)", () => {
+        const base = { name: "A B", title: "X", department: "Sales", managerId: "priya", startDate: OB.addDays(T, 20), workType: "Onsite", jobLevel: "Intern" };
+        ok(OB.validateHire({ ...base, role: "role-ae" }, T).ok);
+        ok(OB.validateHire({ ...base, role: "role-backend" }, T).errors.role, "Backend Engineer isn't a Sales role");
+        const w = OB.validateHire({ ...base, managerId: "david" }, T);
+        ok(w.ok && w.warnings.some((x) => /David Okafor manages Engineering, not Sales/.test(x)));
+        eq(OB.validateRole({ name: "Account Executive", department: "Sales" }, OB.ROLE_TEMPLATES).errors.name, "Sales already has a role called Account Executive.");
+        ok(OB.validateRole({ name: "Account Executive", department: "Marketing" }, OB.ROLE_TEMPLATES).ok, "same name in another department is fine");
+        ok(OB.validateRole({ name: "", department: "" }, []).errors.department);
+      });
+
+      // HR (pass C1, with the filter bar removed in C2)
+      const rowsFor = (today) =>
+        ["emily", "marcus", "aisha", "tom"].map((id) => {
+          const h = seedHire(id, today);
+          return { h, s: OB.hireStats(h, today) };
+        });
+      test("HR routes (filter bar removed in C2): pages in the hash; an old filter query is ignored", () => {
+        eq(OB.buildHrRoute({ page: "hires" }), "#/hr/hires");
+        eq(OB.parseHrRoute("#/hr/hires?status=behind&dept=Sales"), { page: "hires" }, "old filter query ignored");
+        eq(OB.parseHrRoute("#/hr/hire/emily/edit"), { page: "hire", hireId: "emily", edit: true });
+        eq(OB.parseHrRoute("#/hr/add/bulk"), { page: "add", sub: "bulk" });
+        eq(OB.parseHrRoute("#/hr/more/compliance"), { page: "more", sub: "compliance" });
+        eq(OB.parseHrRoute("#/hr/more/documents"), { page: "more", sub: "documents" });
+        eq(OB.parseHrRoute("#/hr/more/moves"), { page: "more" }, "offboarding & moves was dropped");
+        eq(OB.buildHrRoute({ page: "more", sub: "documents" }), "#/hr/more/documents");
+        eq(OB.buildHrRoute({ page: "insights" }), "#/hr/insights");
+        eq(OB.parseHrRoute("#/team"), null, "manager routes aren't HR routes");
+        eq(OB.parseHrRoute("#/hr/hire/<bad>"), { page: "hires" });
+        eq(OB.filterRows, undefined, "the filter logic is gone");
+      });
+      test("Where everyone is: the phase line in the pop-up; KPI numbers", () => {
+        const rows = rowsFor(T);
+        eq(OB.phaseLine("2026-11-09", T), "Before Day 1 · starts in 4 days");
+        eq(OB.phaseLine("2026-11-03", T), "Week 1 · Day 3");
+        eq(OB.phaseLine("2026-10-19", T), "Weeks 2–4 · Day 18");
+        eq(rows.filter((r) => OB.KPI_TESTS.soon(r.s)).map((r) => r.h.id).sort(), ["emily", "tom"]);
+        eq(rows.filter((r) => OB.KPI_TESTS.behind(r.s)).map((r) => r.h.id).sort(), ["emily", "marcus"]);
+      });
+
+      // Pulse check-ins (C1a)
+      test("pulse check-in: Day 7 and Day 30, shown once, part of the one-banner rule", () => {
+        const start = OB.addDays(T, -6); // today is Day 7
+        const h = hire("Engineering", start);
+        h.pulses = {};
+        eq(OB.pulseDue(h, T), "d7");
+        eq(OB.pulseDue(h, OB.addDays(T, -1)), null, "not before Day 7");
+        const b = OB.pickBanner(h, T, {});
+        eq([b.kind, b.pulse], ["pulse", "d7"], "outranks the 'past their date' banner");
+        ok(OB.ownLate(h, T).length > 0, "even though there are tasks past their date");
+        ok(!OB.answerPulse(h, "d7", "meh", "", T).ok, "one of the three answers");
+        ok(OB.answerPulse(h, "d7", "okay", "  Busy week  ", T).ok);
+        eq(h.pulses.d7, { answer: "okay", comment: "Busy week", at: T });
+        eq(OB.pulseDue(h, T), null, "answered: gone");
+        eq(OB.pickBanner(h, T, {}).kind, "overdue", "the next banner shows");
+        eq(OB.pulseDue(h, OB.addDays(start, 29)), "d30");
+        OB.dismissPulse(h, "d30", OB.addDays(start, 29));
+        eq(OB.pulseDue(h, OB.addDays(start, 30)), null, "Not now = shown once");
+        eq(OB.focusTasks(h, T, 3).tasks.length <= 3, true, "the focus list keeps its 3 rows");
+      });
+
+      // Insights (C1a)
+      test("insights: avg days to finish Week 1, top-5 tasks past their date, pulse counts", () => {
+        const arch = OB.seedArchive(T);
+        eq(arch.length, 9);
+        ok(arch.every((h) => h.archived && h.tasks.every((t) => t.done)), "finished hires");
+        const lucas = arch.find((h) => h.id === "p-lucas");
+        eq(OB.week1Days(lucas), 8, "Lucas: security training (Day 4, a Thursday) was done 4 days later, on Monday = Day 8");
+        const ins = OB.insights(arch, T, {});
+        eq(ins.hires, 9);
+        eq(ins.finished, 9);
+        eq(ins.pastDate[0].title, "Complete security awareness training");
+        eq(ins.pastDate[0].count, 7);
+        ok(ins.pastDate.length === 5 && ins.pastDate.every((x, i, a) => i === 0 || a[i - 1].count >= x.count), "top 5, most first");
+        eq(ins.pulse.counts, { great: 9, okay: 6, better: 3 });
+        eq(ins.pulse.answered, 18);
+        ok(ins.pulse.showComments);
+        ok(!JSON.stringify(ins.pulse).includes("Lucas"), "comments carry no names");
+      });
+      test("insights include active hires and hide comments for small groups", () => {
+        const arch = OB.seedArchive(T);
+        const act = rowsFor(T).map((r) => r.h);
+        act.find((h) => h.id === "aisha").pulses = { d7: { answer: "great", comment: "", at: T } };
+        const all = OB.insights(arch.concat(act), T);
+        eq(all.hires, 13);
+        eq(all.pulse.counts.great, 10, "Aisha's Day 7 answer counts too");
+        const one = OB.insights([act.find((h) => h.id === "aisha")], T);
+        ok(!one.pulse.showComments, "fewer than 3 answers: comments stay hidden");
+      });
+
+      // Edit hire (U4)
+      test("edit hire: new manager takes over the open manager tasks", () => {
+        const em = seedHire("emily", T);
+        const p = OB.planHireEdit(em, { managerId: "priya", department: "Engineering" }, T);
+        ok(p.summary.managerChanged);
+        eq(p.summary.managerTasks, em.tasks.filter((t) => t.owner === "manager" && !t.done).length);
+        eq(p.summary.managerLine, `David's ${p.summary.managerTasks} open tasks move to Priya.`);
+        eq(p.tasks.length, em.tasks.length, "the plan itself is the same");
+        const s = OB.applyHireEdit(em, { managerId: "priya" }, T);
+        eq(em.managerId, "priya");
+        ok(s.managerTasks > 0);
+        eq(OB.bannedWords(s.managerLine), []);
+      });
+      test("edit hire: department swap keeps done and custom tasks, swaps open department tasks", () => {
+        const m = seedHire("marcus", T);
+        m.tasks.push(OB.makeCustomTask({ title: "Read the Q3 roadmap", owner: "newhire", dueDate: OB.addDays(m.startDate, 12) }, m, "david"));
+        const doneBefore = m.tasks.filter((t) => t.done).map((t) => t.id).sort();
+        const p = OB.planHireEdit(m, { department: "Sales", managerId: "priya", role: null }, T);
+        ok(p.summary.deptChanged && p.summary.planChanged);
+        ok(p.summary.removed.some((x) => x.title === "Ship your first small pull request"), "open Engineering task comes out");
+        ok(p.summary.removed.some((x) => x.source === "Backend Engineer"), "open role tasks come out with the role");
+        ok(p.summary.added.some((x) => x.title === "Pass the product demo certification"), "Sales task goes in");
+        ok(!p.summary.added.some((x) => x.title === "Sign offer letter and employment agreement"), "Company tasks aren't added twice");
+        eq(p.tasks.filter((t) => t.done).map((t) => t.id).sort(), doneBefore, "done tasks stay (incl. done Engineering ones)");
+        ok(p.tasks.some((t) => t.custom), "custom task stays");
+        ok(p.tasks.filter((t) => t.source === "Sales").every((t) => t.dueDate >= T), "new tasks are never already past");
+        ok(p.tasks.some((t) => t.key === "e-access" && t.done), "done department task kept");
+        eq(p.summary.buddyTo, null, "no buddy picked yet stays none");
+        // Rule filtering: Remote swaps in the remote-only Company tasks; Onsite-only open ones come out.
+        const r = OB.planHireEdit(seedHire("emily", T), { workType: "Remote" }, T);
+        ok(r.summary.added.some((x) => x.title === "Set up your home workspace"));
+        ok(r.summary.removed.some((x) => x.title === "Collect your building badge"));
+      });
+      test("edit hire: a skipped task stays skipped; buddy follows the department", () => {
+        const em = seedHire("emily", T);
+        em.tasks = em.tasks.filter((t) => t.key !== "c-welcome"); // HR left it out when adding
+        const p = OB.planHireEdit(em, { managerId: "david" }, T);
+        ok(!p.summary.planChanged && !p.tasks.some((t) => t.key === "c-welcome"));
+        const q = OB.planHireEdit(em, { department: "Sales", managerId: "priya" }, T);
+        eq([q.summary.buddyFrom, q.summary.buddyTo], ["nina", "carlos"], "c-buddy is done, so the Sales default buddy");
+      });
+      test("edit hire: changing the start date recomputes open due dates (weekend rule, not before today)", () => {
+        const em = seedHire("emily", T);
+        const p = OB.planHireEdit(em, { startDate: "2026-11-16" }, T);
+        ok(p.summary.startChanged && p.summary.shifted > 0);
+        const ob = (k) => p.tasks.find((t) => t.key === k);
+        eq(ob("c-orient").dueDate, "2026-11-16");
+        eq(ob("c-note").dueDate, "2026-11-13", "3 days before the new start");
+        const fresh = hire("Engineering", "2026-11-09");
+        eq(OB.planHireEdit(fresh, { startDate: "2026-11-16" }, T).tasks.find((t) => t.key === "c-buddy").dueDate, "2026-11-13", "1 day before = Sunday -> Friday");
+        eq(ob("c-offer").dueDate, em.tasks.find((t) => t.key === "c-offer").dueDate, "done tasks keep their dates");
+        const earlier = OB.planHireEdit(em, { startDate: "2026-11-02" }, T);
+        ok(earlier.tasks.filter((t) => !t.done).every((t) => t.dueDate >= T), "never already past");
+      });
+      test("edit hire validation: the manager must belong to the department", () => {
+        const em = seedHire("emily", T);
+        const base = { name: em.name, title: em.title, department: "Sales", managerId: "david", startDate: em.startDate, workType: "Onsite", jobLevel: "Individual contributor", role: null };
+        eq(OB.validateHireEdit(base, em, T, [em]).errors.managerId, "Pick a manager in Sales. David Okafor manages Engineering.");
+        ok(OB.validateHireEdit({ ...base, managerId: "priya" }, em, T, [em]).ok, "own name isn't a duplicate");
+        eq(OB.managerFor("Sales"), "priya");
+        const old = { ...em, startDate: OB.addDays(T, -40) };
+        ok(OB.validateHireEdit({ ...base, managerId: "priya", startDate: old.startDate }, old, T, []).ok, "an unchanged old start date is fine");
+      });
+
+      test("remove hire + undo: back in the same place; 'Viewing as' falls back to HR", () => {
+        const st = { viewerId: "marcus", hires: ["emily", "marcus", "aisha"].map((id) => ({ id, name: id })) };
+        const r = OB.removeHire(st, "marcus");
+        eq(st.hires.map((h) => h.id), ["emily", "aisha"]);
+        eq([r.index, r.wasViewer, st.viewerId], [1, true, "sarah"]);
+        ok(OB.restoreHire(st, r));
+        eq(st.hires.map((h) => h.id), ["emily", "marcus", "aisha"]);
+        ok(!OB.restoreHire(st, r), "only once");
+        eq(OB.removeHire(st, "nobody"), null);
+      });
+
+      test("migration (pass C1): role, pulses, roles, archive and the HR filter get defaults", () => {
+        const s = {
+          version: 1, viewerId: "sarah",
+          hires: [
+            { id: "o1", name: "Old One", department: "Sales", startDate: T, managerId: "priya", tasks: [] },
+            { id: "o2", name: "Old Two", department: "Engineering", startDate: T, managerId: "david", tasks: [], role: "role-gone", pulses: { d7: { answer: "great", comment: 5 }, d99: {}, d30: { answer: "x" } } },
+          ],
+        };
+        OB.migrateState(s);
+        eq(s.hires.map((h) => [h.role, h.pulses]), [[null, {}], [null, { d7: { answer: "great", comment: "" } }]]);
+        eq(s.roles.map((r) => r.id), ["role-backend", "role-ae", "role-support"]);
+        eq(s.archive.length, 9, "older saves get the finished hires for Insights");
+        ok(s.archive.every((h) => h.archived));
+        eq(s.hrFilter, undefined, "the old filter bar's saved state is dropped");
+        const t = { version: 1, hires: [], roles: [{ id: "r1", name: "Data Analyst", department: "Marketing", tasks: [{ key: "k", title: "T", owner: "newhire", dayOffset: 1 }, { bad: 1 }] }, { id: "r2", name: "", department: "Sales" }], archive: [], hrFilter: { dept: "Sales" } };
+        OB.migrateState(t);
+        eq(t.roles.map((r) => [r.id, r.tasks.length]), [["r1", 1]]);
+        eq(t.archive, [], "an empty archive stays empty");
+        eq(t.hrFilter, undefined);
+      });
+
+
+      // ---- Round 4, pass C2 ----
+      // C2b. Compliance
+      const compHires = () => {
+        const hs = rowsFor(T).map((r) => r.h);
+        for (const h of hs) for (const t of h.tasks) if (t.done && !t.doneBy) t.doneBy = t.owner === "newhire" ? h.id : t.owner === "manager" ? h.managerId : "sarah";
+        return hs;
+      };
+      test("C2b compliance matrix: ✓ / ○ / — cells, columns, headline count", () => {
+        const hs = compHires();
+        const m = OB.complianceMatrix(hs.concat({ ...hs[0], id: "old", archived: true }));
+        eq(m.rows.map((r) => r.hire.id), ["aisha", "marcus", "emily", "tom"], "everyone onboarding now (not the archive), by start date");
+        eq(m.columns.map((c) => c.key), ["c-offer", "c-tax", "c-security", "c-handbook", "c-harass"]);
+        ok(m.columns.find((c) => c.key === "c-handbook").ack, "acknowledge tasks are compliance items");
+        const aisha = m.rows.find((r) => r.hire.id === "aisha");
+        ok(aisha.allDone, "Aisha has everything signed");
+        eq([m.signed, m.total, m.headline], [1, 4, "1 of 4 people have everything signed"]);
+        const em = m.rows.find((r) => r.hire.id === "emily");
+        eq(em.cells["c-offer"].state, "done"); eq(em.cells["c-security"].state, "open");
+        eq(OB.cellText(em.cells["c-offer"]), `✓ ${"Oct 30"}`);
+        eq(OB.cellText(em.cells["c-security"]), "○ Not yet");
+        eq(OB.cellText({ state: "na" }), "—");
+        eq(OB.cellWords({ state: "na" }, m.columns[0], em.hire), "Emily Chen, Sign offer letter and employment agreement: not applicable");
+        ok(/acknowledged Mon, Nov 2$/.test(OB.cellWords({ state: "done", doneAt: "2026-11-02" }, m.columns[3], em.hire)));
+        // A support role adds the escalation policy (acknowledge) only for that person; others get "—".
+        const cs = { ...hire("Customer Support", OB.addDays(T, -10)), id: "cs1", name: "Casey Support", role: "role-support" };
+        cs.tasks = OB.buildPlan({ department: "Customer Support", role: "role-support" }, cs.startDate);
+        const m2 = OB.complianceMatrix(hs.concat(cs));
+        ok(m2.columns.some((c) => c.key === "r-cs-escalation"));
+        eq(m2.rows.find((r) => r.hire.id === "emily").cells["r-cs-escalation"].state, "na");
+        eq(OB.complianceMatrix([hs.find((h) => h.id === "aisha")]).headline, "1 of 1 person has everything signed");
+        eq(OB.complianceMatrix([]).headline, "Nobody has an onboarding plan yet");
+        eq(OB.bannedWords(m.headline + m.rows.map((r) => m.columns.map((c) => OB.cellWords(r.cells[c.key], c, r.hire)).join(" ")).join(" ")), []);
+      });
+      test("C2b audit trail: who completed it and when, acknowledged wording", () => {
+        const hs = compHires();
+        hs.find((h) => h.id === "marcus").tasks.find((t) => t.key === "c-handbook").done = true;
+        Object.assign(hs.find((h) => h.id === "marcus").tasks.find((t) => t.key === "c-handbook"), { doneAt: "2026-11-03", doneBy: "marcus" });
+        const m = OB.complianceMatrix(hs);
+        const a = OB.auditTrail(m, "c-handbook", hs);
+        eq(a.entries.map((e) => [e.hireName, e.at, e.verb, e.text]), [
+          ["Marcus Johnson", "2026-11-03", "acknowledged", "Marcus Johnson acknowledged it"],
+          ["Aisha Patel", "2026-10-23", "acknowledged", "Aisha Patel acknowledged it"],
+        ], "newest first");
+        eq(a.notYet.map((x) => x.hireName), ["Emily Chen", "Tom Rivera"]);
+        const b = OB.auditTrail(m, "c-offer", hs);
+        ok(b.entries.every((e) => e.verb === "completed"));
+        const hrDone = OB.auditTrail({ columns: [m.columns[0]], rows: [{ hire: { id: "x", name: "Pat" }, cells: { "c-offer": { state: "done", doneAt: T, doneBy: "sarah" } } }] }, "c-offer", hs);
+        eq(hrDone.entries[0].text, "Sarah Kim marked it done for Pat");
+        eq(OB.whoName("nobody", hs), "Unknown");
+        eq(OB.auditTrail(m, "nope", hs).column, null);
+      });
+      test("C2b CSV export: matrix + audit log, escaping, formula guard", () => {
+        eq(OB.csvCell("plain"), "plain");
+        eq(OB.csvCell("Rivera, Sam"), '"Rivera, Sam"');
+        eq(OB.csvCell('Say "hi"'), '"Say ""hi"""');
+        eq(OB.csvCell("two\nlines"), '"two\nlines"');
+        eq(OB.csvCell("=SUM(A1)"), "'=SUM(A1)");
+        eq(OB.csvCell("-1"), "'-1");
+        eq(OB.csvCell(null), "");
+        const hs = compHires();
+        hs[0].name = "Chen, Emily";
+        const m = OB.complianceMatrix(hs);
+        const csv = OB.complianceCsv(m, hs);
+        const lines = csv.split("\r\n");
+        eq(lines[0], "Compliance matrix");
+        eq(lines[1], "Person,Department,Manager,Sign offer letter and employment agreement,Complete I-9 and W-4 tax forms,Complete security awareness training,Read and acknowledge the employee handbook,Complete harassment prevention training");
+        ok(lines.some((l) => l.startsWith('"Chen, Emily",Engineering,David Okafor,Done 2026-10-30,')), "quoted name, done date");
+        ok(lines.includes("Audit log"));
+        ok(lines.includes("Read and acknowledge the employee handbook,Aisha Patel,Acknowledged,Aisha Patel,2026-10-23"));
+        ok(csv.endsWith("\r\n"));
+        ok(OB.parseCsv(csv).length > 6, "it reads back with the CSV parser");
+      });
+      test("C2b doneBy: recorded by form submit, learning sync, buddy; migrated from the owner", () => {
+        const h = hire("Engineering", "2026-11-09");
+        h.id = "emily"; h.name = "Emily Chen"; h.forms = {}; h.learning = {};
+        const offer = { legalName: "Emily Chen", signature: "Emily Chen", agree: true };
+        const r = OB.submitForm(h, "offer", { ...offer }, T, "emily");
+        ok(r.ok, "offer form submits");
+        eq(h.tasks.find((t) => t.key === "c-offer").doneBy, "emily");
+        const sec = OB.LEARNING.Company ? (OB.LEARNING.Company.find((x) => x.taskKey === "c-security") || {}).id : "l-security";
+        OB.setLearningStatus(h, sec || "l-security", "done", T, "emily");
+        eq(h.tasks.find((t) => t.key === "c-security").doneBy, "emily");
+        OB.chooseBuddy(h, "nina", T);
+        eq(h.tasks.find((t) => t.key === "c-buddy").doneBy, "david", "no byId: the manager");
+        const old = { id: "o", managerId: "david", tasks: [
+          { owner: "newhire", done: true }, { owner: "manager", done: true }, { owner: "it", done: true }, { owner: "hr", done: true, doneBy: "sarah" }, { owner: "newhire", done: false },
+        ] };
+        OB.migrateDoneBy(old);
+        eq(old.tasks.map((t) => t.doneBy), ["o", "david", "sarah", "sarah", null]);
+      });
+
+      // C2c. Documents
+      test("C2c documents: audience filtering and search", () => {
+        const docs = OB.seedDocuments();
+        ok(docs.length >= 10);
+        const titles = (h) => OB.docsFor(h, docs).map((d) => d.title);
+        const eng = titles({ department: "Engineering", jobLevel: "Individual contributor" });
+        ok(eng.includes("Engineering handbook") && eng.includes("Employee handbook"));
+        ok(!eng.includes("Sales playbook") && !eng.includes("Intern stipend and perks") && !eng.includes("Manager essentials guide"));
+        ok(titles({ department: "Sales", jobLevel: "People manager" }).includes("Manager essentials guide"), "job level audience");
+        ok(titles({ department: "Sales", jobLevel: "Intern" }).includes("Intern stipend and perks"));
+        eq(OB.docsFor({ department: "Sales" }, docs)[0].category, "Policies", "sorted by category order");
+        eq(OB.searchDocs(docs, "handbook", "all").map((d) => d.id), ["doc-handbook", "doc-eng"]);
+        eq(OB.searchDocs(docs, "  HANDBOOK  engineering ", "all").map((d) => d.id), ["doc-eng"], "every word, any case");
+        eq(OB.searchDocs(docs, "", "Benefits").length, 3);
+        eq(OB.searchDocs(docs, "interns", "all").map((d) => d.id), ["doc-intern"], "audience words count");
+        eq(OB.searchDocs(docs, "zzz", "all"), []);
+        eq(OB.audienceLabel({ kind: "level", value: "People manager" }), "People managers");
+        eq(OB.audienceLabel({ kind: "department", value: "Nowhere" }), "Everyone", "unknown audience = everyone");
+        eq(OB.parseAudience("department:Sales"), { kind: "department", value: "Sales" });
+        eq(OB.audienceValue({ kind: "level", value: "Intern" }), "level:Intern");
+      });
+      test("C2c documents: validation, add / edit", () => {
+        const docs = OB.seedDocuments();
+        const v = OB.validateDoc({ title: "", category: "", link: "intranet", audience: "x:y" }, docs);
+        eq(Object.keys(v.errors).sort(), ["audience", "category", "link", "title"]);
+        eq(OB.validateDoc({ title: "employee HANDBOOK", category: "Policies", link: "https://x.example.com", audience: "everyone" }, docs).errors.title, "There's already a document called employee HANDBOOK.");
+        ok(OB.validateDoc({ title: "Employee handbook", category: "Policies", link: "https://x.example.com", audience: "everyone" }, docs, "doc-handbook").ok, "editing keeps its own title");
+        const d = OB.makeDoc({ title: " Travel policy ", category: "Policies", desc: "", link: " https://intranet.example.com/travel ", audience: "department:Sales" }, T, docs);
+        eq([d.title, d.link, d.audience, d.updated], ["Travel policy", "https://intranet.example.com/travel", { kind: "department", value: "Sales" }, T]);
+        ok(!docs.some((x) => x.id === d.id));
+        eq(OB.makeDoc({ title: "X", category: "Benefits", link: "https://a.example.com", audience: "everyone" }, T, docs, "doc-keep").id, "doc-keep");
+        eq(OB.cleanDoc({ id: "bad id!", title: "x", category: "Policies", link: "https://a.example.com" }), null);
+        eq(OB.cleanDoc({ id: "d1", title: "x", category: "Policies", link: "javascript:alert(1)" }), null);
+      });
+      test("C2c docId: link resolution, template flag and picker fields", () => {
+        const docs = OB.seedDocuments();
+        const p = OB.buildPlan("Engineering", T);
+        const hb = p.find((t) => t.key === "c-handbook");
+        eq(hb.docId, "doc-handbook");
+        eq(OB.taskLinkFor(hb, docs).href, "https://intranet.example.com/handbook");
+        const moved = docs.map((d) => (d.id === "doc-handbook" ? { ...d, link: "https://new.example.com/hb" } : d));
+        eq(OB.taskLinkFor(hb, moved), { href: "https://new.example.com/hb", doc: moved[0] }, "the document's link wins");
+        eq(OB.taskLinkFor({ ...hb, link: "https://own.example.com" }, []).href, "https://own.example.com", "document gone: the task's own link");
+        eq(OB.taskLinkFor({ link: "javascript:x" }, docs), null);
+        ok(p.find((t) => t.key === "c-security").required, "required flag reaches the plan");
+        const base = { title: "Read the policy", owner: "newhire", dayOffset: 3, type: "read", docId: "doc-sales", required: true };
+        ok(OB.validateTemplateTask(base, [], docs).ok);
+        eq(OB.validateTemplateTask({ ...base, docId: "doc-gone" }, [], docs).errors.docId, "Pick a document from the list, or none.");
+        const t = OB.makeTemplateTask(base, "k");
+        eq([t.docId, t.required], ["doc-sales", true]);
+        eq(OB.makeTemplateTask({ ...base, type: "watch" }, "k").docId, undefined, "only read / acknowledge tasks link a document");
+        eq(OB.cleanTemplateTask({ key: "k", ...base }).docId, "doc-sales");
+        eq(OB.cleanTemplateTask({ key: "k", ...base, required: "yes" }).required, undefined);
+        eq(OB.templateIsEdited(OB.TEMPLATES.Company.map((x) => (x.key === "c-welcome" ? { ...x, required: true } : x)), OB.TEMPLATES.Company), true, "required counts as an edit");
+        eq(OB.templateIsEdited(OB.TEMPLATES.Company.map((x) => (x.key === "c-handbook" ? { ...x, docId: undefined } : x)), OB.TEMPLATES.Company), true);
+      });
+
+      test("migration (pass C2): required / docId, doneBy, documents; old saves load", () => {
+        const s = {
+          version: 1, viewerId: "sarah", hrFilter: { dept: "Sales" },
+          hires: [{ id: "o1", name: "Old One", department: "Sales", startDate: T, managerId: "priya", tasks: [
+            { key: "c-handbook", title: "Read", owner: "newhire", done: true, doneAt: T },
+            { key: "c-security", title: "Sec", owner: "newhire", done: false },
+            { key: null, title: "Custom", owner: "manager", done: true, doneAt: T, docId: "bad id!" },
+          ] }],
+        };
+        OB.migrateState(s);
+        const h = s.hires[0];
+        eq([h.tasks[0].docId, h.tasks[0].doneBy, h.tasks[1].required, h.tasks[1].doneBy, h.tasks[2].doneBy, h.tasks[2].docId], ["doc-handbook", "o1", true, null, "priya", undefined]);
+        eq(s.documents.length, OB.DOCUMENTS.length);
+        eq(s.hrFilter, undefined, "an old filter bar state is dropped");
+        eq(h.kind, undefined, "no plan kinds (offboarding and moves were dropped)");
+        const t = { version: 1, hires: [], documents: [{ id: "x" }, OB.DOCUMENTS[0]] };
+        OB.migrateState(t);
+        eq(t.documents.map((d) => d.id), ["doc-handbook"], "bad documents dropped");
+      });
+
+      // ---- Round 4 fix pass ----
+      test("F4 weekend start: Saturday / Sunday warn (not block) and suggest the Monday", () => {
+        const sat = OB.validateHire({ ...good, startDate: "2026-11-14" }, T, []);
+        ok(sat.ok, "a weekend start is allowed");
+        eq(sat.weekend.monday, "2026-11-16");
+        eq(sat.weekend.label, "Use Mon, Nov 16");
+        ok(sat.warnings.includes("Nov 14 is a Saturday. Most people start on a Monday: use Mon, Nov 16?"), sat.warnings.join(" | "));
+        const sun = OB.validateHire({ ...good, startDate: "2026-11-15" }, T, []);
+        eq([sun.weekend.day, sun.weekend.monday], ["Sunday", "2026-11-16"]);
+        eq(OB.weekendStart("2026-12-27").monday, "2026-12-28");
+        eq(OB.weekendStart("2027-01-02").text, "Jan 2 is a Saturday. Most people start on a Monday: use Mon, Jan 4?", "across the year end");
+      });
+      test("F4 weekday start: no weekend warning", () => {
+        for (const d of ["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20"]) {
+          const r = OB.validateHire({ ...good, startDate: d }, T, []);
+          eq(r.weekend, null, d);
+          ok(!r.warnings.some((w) => /Saturday|Sunday/.test(w)), d);
+        }
+        eq(OB.weekendStart("not a date"), null);
+      });
+      test("F4 weekend start in edit and bulk import: a warning, still importable", () => {
+        const h = { id: "x", name: "Jo Bloggs", startDate: "2026-11-16", tasks: [] };
+        const e = OB.validateHireEdit({ ...good, startDate: "2026-11-14" }, h, T, [], OB.ROLE_TEMPLATES);
+        ok(e.ok && e.weekend && e.weekend.monday === "2026-11-16", "edit warns too");
+        const csv = "name,title,department,manager,start date\nAna Diaz,Engineer,Engineering,David Okafor,2026-11-14\nBo Li,Engineer,Engineering,David Okafor,2026-11-16";
+        const pv = OB.bulkPreview(csv, T, [], OB.ROLE_TEMPLATES);
+        eq(pv.rows.map((r) => r.ok), [true, true]);
+        eq(pv.rows[0].weekend.monday, "2026-11-16");
+        eq(pv.rows[1].weekend, null);
+        eq(OB.bulkCounts(pv.rows).ready, 2, "the weekend row still imports");
+      });
+      test("seed completion dates never show after the demo today", () => {
+        eq(OB.shownDoneAt("2026-11-06", "2026-11-05"), "2026-11-05");
+        eq(OB.shownDoneAt("2026-11-04", "2026-11-05"), "2026-11-04");
+        eq(OB.shownDoneAt(null, "2026-11-05"), null);
+        eq(OB.shownDoneAt("2026-11-06"), "2026-11-06", "no today: unchanged");
+        const h = hire("Sales", OB.addDays(T, -10));
+        const t = h.tasks.find((x) => OB.isComplianceTask(x));
+        Object.assign(t, { done: true, doneAt: "2026-11-06", doneBy: h.id });
+        const m = OB.complianceMatrix([h], T);
+        const cell = m.rows[0].cells[t.key];
+        eq(cell.doneAt, T);
+        eq(OB.cellText(cell), "✓ Nov 5");
+        eq(OB.complianceMatrix([h]).rows[0].cells[t.key].doneAt, "2026-11-06", "without today the stored date is kept");
       });
 
       const out = document.getElementById("out");

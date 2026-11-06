@@ -7,8 +7,10 @@ window.OB = window.OB || {};
   function seedState() {
     const today = OB.todayISO();
     const hires = OB.SEED_HIRES.map((s) => {
-      const startDate = OB.addDays(today, s.startOffset);
-      const tasks = OB.buildPlan(s.department, startDate, s.skip);
+      // Round 4: seed hires start on a Monday (startWeek), never on a weekend.
+      const startDate = OB.seedStartDate(s, today);
+      // The seed carries department, workType and jobLevel, so conditional template tasks match.
+      const tasks = OB.buildPlan(s, startDate, s.skip);
       const done = new Set(s.doneKeys);
       for (const t of tasks) {
         if (done.has(t.key)) {
@@ -17,11 +19,30 @@ window.OB = window.OB || {};
           t.doneBy = t.owner === "newhire" ? s.id : t.owner === "manager" ? s.managerId : "sarah";
         }
       }
-      return { id: s.id, name: s.name, title: s.title, department: s.department, managerId: s.managerId, startDate, tasks };
+      const p = OB.hireProfile(s);
+      const hire = { id: s.id, name: s.name, title: s.title, department: s.department, workType: p.workType, jobLevel: p.jobLevel, role: s.role || null, managerId: s.managerId, startDate, tasks };
+      // Round 4: buddy (seeded, or the team default once "Assign an onboarding buddy" is done), learning, forms.
+      hire.buddyId = s.buddyId || (done.has("c-buddy") ? OB.defaultBuddyId(s.department) : null);
+      hire.learning = {};
+      for (const id of s.learningDone || []) hire.learning[id] = { status: "done", at: OB.addDays(today, -1) };
+      hire.forms = OB.seedForms(hire);
+      // Round 4, pass B: seeded 1:1 notes and 30/60/90 goals.
+      OB.seedManagerExtras(hire, s, today);
+      // Round 4, pass C1: pulse check-ins already answered (seed: [answer, comment]).
+      hire.pulses = {};
+      for (const [id, v] of Object.entries(s.pulses || {})) hire.pulses[id] = { answer: v[0], comment: v[1] || "", at: OB.addDays(startDate, OB.PULSES[id].from) };
+      return hire;
     });
     // reminders: banner snooze / "Got it" / milestone-seen flags (cleared by Reset demo data).
     // templates: HR's edited copies of OB.TEMPLATES, by template name (empty = all defaults).
-    return { version: 1, viewerId: "emily", demoToday: null, hires, reminders: { hide: {}, seen: {} }, templates: {} };
+    // notify: each manager's notification preferences; outbox: the demo outbox (nothing is ever sent).
+    // roles: role templates (C1b); archive: finished hires from earlier months, for Insights only (C1a).
+    // Round 4, pass C2: documents: the document library.
+    return {
+      version: 1, viewerId: "emily", demoToday: null, hires, reminders: { hide: {}, seen: {} }, templates: {}, notify: {}, outbox: [],
+      roles: OB.ROLE_TEMPLATES.map((r) => JSON.parse(JSON.stringify(r))), archive: OB.seedArchive(today),
+      documents: OB.seedDocuments(),
+    };
   }
 
   function load() {
@@ -30,9 +51,8 @@ window.OB = window.OB || {};
       if (raw) {
         const s = JSON.parse(raw);
         if (s && s.version === 1 && Array.isArray(s.hires)) {
-          // Plans saved before tasks carried isEvent: copy it from the templates.
-          const events = new Set(Object.values(OB.TEMPLATES).flat().filter((t) => t.isEvent).map((t) => t.key));
-          for (const h of s.hires) for (const t of h.tasks || []) if (t.isEvent === undefined) t.isEvent = events.has(t.key);
+          // Older saves: tasks without isEvent/type/link, hires without workType/jobLevel get defaults.
+          OB.migrateState(s);
           // Saved before templates were editable (or corrupt): use the defaults.
           if (!s.templates || typeof s.templates !== "object" || Array.isArray(s.templates)) s.templates = {};
           return s;
